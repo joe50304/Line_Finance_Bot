@@ -2,6 +2,7 @@ flask
 line-bot-sdk
 requests
 gunicorn
-pandas
+pandas>=2.2.0
+numpy<2.0.0
 lxml
 html5lib

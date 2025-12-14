@@ -22,37 +22,66 @@ line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
 
 def get_taiwan_bank_rates(currency_code="HKD"):
-    """
-    爬取 FindRate 網站，取得特定幣別的台灣各家銀行匯率
-    """
     try:
         url = f"https://www.findrate.tw/{currency_code}/" 
         dfs = pd.read_html(url, encoding='utf-8')
-        df = dfs[0] # 抓取第一個表格
+        df = dfs[0]
         
-        result_text = f"📊 {currency_code} 台灣各家銀行賣出價 (低到高):\n"
+        # 標題優化：標註是賣出價前五名
+        result_text = f"🏆 {currency_code} 匯率最優前 5 名 (銀行賣出價):\n"
+        result_text += "(⬇️ 數字越低越划算)\n"
         result_text += "----------------\n"
         
         bank_rates = []
+        
         for index, row in df.iterrows():
             try:
-                bank_name = row[0]
-                spot_selling = row[4] # 即期賣出
-                rate = float(spot_selling)
+                bank_name = str(row[0])
+                if "銀行" in bank_name: continue
+
+                # 優先抓取「即期賣出」(網銀優惠)，若沒有則抓「現金賣出」
+                spot_selling = row[4] # 即期
+                cash_selling = row[2] # 現金
+                
+                rate_str = str(spot_selling).strip()
+                if rate_str == '--':
+                    rate_str = str(cash_selling).strip()
+
+                if rate_str == '--': continue
+
+                rate = float(rate_str)
                 bank_rates.append((bank_name, rate))
             except:
                 continue
 
+        # 1. 排序：由小到大 (因為賣出價越低越好)
         bank_rates.sort(key=lambda x: x[1])
 
-        for bank, rate in bank_rates:
+        # 2. 【關鍵修改】只取前 5 名 (Slice)
+        top_5_banks = bank_rates[:5]
+
+        if not top_5_banks:
+            return "抓取失敗：找不到有效匯率資料。"
+
+        # 3. 漂亮排版：加上獎牌
+        for i, (bank, rate) in enumerate(top_5_banks, 1):
+            # 只有前三名給獎牌
+            if i == 1:
+                rank_icon = "🥇"
+            elif i == 2:
+                rank_icon = "🥈"
+            elif i == 3:
+                rank_icon = "🥉"
+            else:
+                rank_icon = f" {i}."
+
             formatted_rate = f"{rate:.3f}"
-            result_text += f"{bank}: {formatted_rate}\n"
+            result_text += f"{rank_icon} {bank}: {formatted_rate}\n"
             
         return result_text
         
     except Exception as e:
-        return f"讀取匯率失敗，請稍後再試。\n錯誤: {str(e)}"
+        return f"讀取匯率失敗。\n錯誤訊息: {str(e)}"
 
 @app.route("/callback", methods=['POST'])
 def callback():
