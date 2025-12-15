@@ -1,6 +1,8 @@
 import os
 import requests
 import pandas as pd
+from datetime import datetime
+import pytz  # 用來處理時區
 from flask import Flask, request, abort
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
@@ -23,6 +25,28 @@ VALID_CURRENCIES = [
     "MXN", "TRY"
 ]
 
+def get_greeting():
+    """
+    根據台灣時間回傳 早安/午安/晚安
+    """
+    try:
+        tz = pytz.timezone('Asia/Taipei')
+        now = datetime.now(tz)
+        hour = now.hour
+        
+        if 5 <= hour < 12:
+            return "早上好 🌞"
+        elif 12 <= hour < 18:
+            return "下午好 🍱"
+        elif 18 <= hour < 24:
+            return "晚安 🌙"
+        elif 24 <= hour < 5:
+            return "凌晨好 🌞"
+        else:
+            return "你好 🤖"
+    except:
+        return "你好 🤖"
+
 def get_taiwan_bank_rates(currency_code="HKD"):
     try:
         url = f"https://www.findrate.tw/{currency_code}/"
@@ -34,7 +58,7 @@ def get_taiwan_bank_rates(currency_code="HKD"):
         
         dfs = pd.read_html(response.text)
         
-        # 抓取表格 (嘗試抓取第 2 張)
+        # 抓取表格邏輯
         target_df = None
         if len(dfs) >= 2:
             target_df = dfs[1]
@@ -58,10 +82,16 @@ def get_taiwan_bank_rates(currency_code="HKD"):
             try:
                 row = target_df.iloc[i]
                 bank_name = str(row[0]).strip()
-                cash_selling = str(row[2]).strip() # 現鈔賣出
+                cash_selling = str(row[2]).strip()
                 update_time = str(row[5]).strip()
                 
-                if "銀行" in bank_name or cash_selling == '--': continue
+                # 【關鍵修正】
+                # 原本: if "銀行" in bank_name: continue  <-- 這行會殺掉 "兆豐銀行"
+                # 改為: 只過濾完全等於 "銀行名稱" 或 "銀行" 的標題列
+                if bank_name in ["銀行名稱", "銀行", "幣別"]: continue
+                
+                # 排除無報價的銀行
+                if cash_selling == '--': continue
 
                 rate = float(cash_selling)
                 bank_rates.append({
@@ -72,7 +102,10 @@ def get_taiwan_bank_rates(currency_code="HKD"):
             except:
                 continue
 
+        # 排序：由低到高
         bank_rates.sort(key=lambda x: x['rate'])
+        
+        # 取前 5 名
         top_5_banks = bank_rates[:5]
 
         if not top_5_banks:
@@ -83,7 +116,7 @@ def get_taiwan_bank_rates(currency_code="HKD"):
             elif i == 2: icon = "🥈"
             elif i == 3: icon = "🥉"
             else: icon = f" {i}."
-            result_text += f"{icon} {item['bank']} ({item['time']}): {item['rate']}\n" # 這裡不強制 .3f，依網站顯示為主，以免位數不同
+            result_text += f"{icon} {item['bank']} ({item['time']}): {item['rate']}\n"
             
         return result_text
         
@@ -109,9 +142,15 @@ def callback():
 def push_report():
     if not TARGET_ID:
         return "Target ID not set.", 500
+    
+    # 取得動態問候語
+    greeting = get_greeting()
     report = get_taiwan_bank_rates("HKD")
+    
     try:
-        line_bot_api.push_message(TARGET_ID, TextSendMessage(text=f"🌞 早安！每日匯率 (現鈔賣出)\n\n{report}"))
+        # 訊息內容：加入動態問候語
+        msg_content = f"{greeting}！每日匯率快報 (現鈔賣出)\n\n{report}"
+        line_bot_api.push_message(TARGET_ID, TextSendMessage(text=msg_content))
         return "Sent!", 200
     except Exception as e:
         return f"Error: {e}", 500
@@ -135,12 +174,12 @@ def handle_message(event):
         line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"ID: {target_id}"))
         return
 
-    # 匯率查詢 (白名單過濾)
+    # 匯率查詢
     if msg in VALID_CURRENCIES:
         report = get_taiwan_bank_rates(msg)
         line_bot_api.reply_message(event.reply_token, TextSendMessage(text=report))
     
-    # 3. 其他情況保持安靜 (pass)
+    # 其他情況保持安靜
     else:
         pass
 
