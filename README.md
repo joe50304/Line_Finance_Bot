@@ -39,7 +39,7 @@
 
 ### 1. 複製專案
 ```bash
-git clone [https://github.com/joe50304/Line_Finance_Bot.git](https://github.com/joe50304/Line_Finance_Bot.git)
+git clone https://github.com/joe50304/Line_Finance_Bot.git
 cd Line_Finance_Bot
 ```
 
