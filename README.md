@@ -39,5 +39,17 @@
 
 ### 1. 複製專案
 ```bash
-git clone [https://github.com/您的帳號/專案名稱.git](https://github.com/您的帳號/專案名稱.git)
-cd 專案名稱
+git clone [https://github.com/joe50304/Line_Finance_Bot.git](https://github.com/joe50304/Line_Finance_Bot.git)
+cd Line_Finance_Bot
+```
+
+### 2.進行Library安裝
+```bash
+pip install -r requirements.txt
+```
+
+### 3.運行此程式
+```bash
+python app.py
+```
+
