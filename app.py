@@ -21,8 +21,7 @@ TARGET_ID = os.environ.get('MY_USER_ID', '')
 line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
 
-# 記得在檔案最上方加入這行 (如果原本沒有的話)
-import requests 
+
 
 def get_taiwan_bank_rates(currency_code="HKD"):
     try:
