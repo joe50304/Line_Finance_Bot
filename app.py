@@ -10,8 +10,10 @@ from linebot.exceptions import InvalidSignatureError
 from linebot.models import (
     MessageEvent, TextMessage, TextSendMessage, JoinEvent, ImageSendMessage,
     FlexSendMessage, BubbleContainer, BoxComponent, TextComponent, ButtonComponent,
-    PostbackAction, MessageAction, SeparatorComponent
+    PostbackAction, MessageAction, SeparatorComponent, URIAction, ImageComponent
 )
+from cachetools import cached, TTLCache
+
 
 app = Flask(__name__)
 
@@ -52,6 +54,11 @@ def get_greeting():
     except:
         return "你好 🤖"
 
+# 設定快取: 最多存 20 個結果 (各幣別)，有效期 300 秒 (5分鐘)
+# 避免短時間大量 request 被封鎖
+rate_cache = TTLCache(maxsize=20, ttl=300)
+
+@cached(rate_cache)
 def get_taiwan_bank_rates(currency_code="HKD"):
     try:
         url = f"https://www.findrate.tw/{currency_code}/"
@@ -479,6 +486,108 @@ def generate_stock_flex_message(data):
         )
     )
 
+def generate_help_message():
+    """
+    產生功能選單 Flex Message
+    """
+    return FlexSendMessage(
+        alt_text="功能選單",
+        contents=BubbleContainer(
+            body=BoxComponent(
+                layout='vertical',
+                contents=[
+                    TextComponent(text="🤖 金融快報助手", weight='bold', size='xl', color='#1DB446'),
+                    SeparatorComponent(margin='md'),
+                    TextComponent(text="請選擇您想要的功能：", size='sm', margin='md', color='#555555'),
+                    BoxComponent(
+                        layout='vertical',
+                        margin='lg',
+                        spacing='sm',
+                        contents=[
+                            BoxComponent(
+                                layout='horizontal',
+                                spacing='sm',
+                                contents=[
+                                    ButtonComponent(
+                                        style='primary',
+                                        height='sm',
+                                        color='#2c3e50',
+                                        action=MessageAction(label='🇺🇸 美金匯率', text='USD')
+                                    ),
+                                    ButtonComponent(
+                                        style='primary',
+                                        height='sm',
+                                        color='#2c3e50',
+                                        action=MessageAction(label='🇯🇵 日幣匯率', text='JPY')
+                                    ),
+                                    ButtonComponent(
+                                        style='primary',
+                                        height='sm',
+                                        color='#2c3e50',
+                                        action=MessageAction(label='🇭🇰 港幣匯率', text='HKD')
+                                    )
+                                ]
+                            ),
+                            BoxComponent(
+                                layout='horizontal',
+                                spacing='sm',
+                                contents=[
+                                    ButtonComponent(
+                                        style='secondary',
+                                        height='sm',
+                                        action=MessageAction(label='📈 美金走勢', text='USD圖')
+                                    ),
+                                    ButtonComponent(
+                                        style='secondary',
+                                        height='sm',
+                                        action=MessageAction(label='📈 日幣走勢', text='JPY圖')
+                                    ),
+                                    ButtonComponent(
+                                        style='secondary',
+                                        height='sm',
+                                        action=MessageAction(label='📈 港幣走勢', text='HKD圖')
+                                    )
+                                ]
+                            ),
+                            SeparatorComponent(margin='md'),
+                            BoxComponent(
+                                layout='horizontal',
+                                spacing='sm',
+                                contents=[
+                                    ButtonComponent(
+                                        style='primary',
+                                        height='sm',
+                                        color='#e74c3c',
+                                        action=MessageAction(label='台積電 (2330)', text='2330')
+                                    ),
+                                    ButtonComponent(
+                                        style='primary',
+                                        height='sm',
+                                        color='#e74c3c',
+                                        action=MessageAction(label='0050', text='0050')
+                                    )
+                                ]
+                            ),
+                            ButtonComponent(
+                                style='link',
+                                height='sm',
+                                action=MessageAction(label='查詢 ID', text='ID')
+                            ),
+                            TextComponent(
+                                text="💡 小提示: 直接輸入股票代號 (如 2603) 也可以查詢喔！",
+                                size='xs',
+                                color='#aaaaaa',
+                                align='center',
+                                margin='sm',
+                                wrap=True
+                            )
+                        ]
+                    )
+                ]
+            )
+        )
+    )
+
 def generate_kline_chart_url(symbol, period="1mo", interval="1d", title_suffix="日K"):
     """
     產生 K 線圖、即時走勢圖或成交量圖 URL (QuickChart)
@@ -770,6 +879,14 @@ def handle_message(event):
         # 發生錯誤時的 fallback
         # 如果確定是被標註(前面邏輯 pass)，但後面出錯，回個簡單的
         pass
+
+        pass
+
+    # 功能選單 (Help Menu)
+    if msg.lower() in ['help', 'menu', '選單', '功能', '使用說明']:
+        flex_msg = generate_help_message()
+        line_bot_api.reply_message(event.reply_token, flex_msg)
+        return
 
     # 匯率查詢
     if msg in VALID_CURRENCIES:
