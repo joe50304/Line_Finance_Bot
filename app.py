@@ -649,8 +649,12 @@ def generate_kline_chart_url(symbol, period="1mo", interval="1d", title_suffix="
         
         if response.status_code == 200:
             return response.json().get('url')
-        return None
+        else:
+            print(f"QuickChart Failed (Status {response.status_code}): {response.text}")
+            return None
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         print(f"Error generating chart: {e}")
         return None
 
