@@ -174,6 +174,27 @@ def handle_message(event):
         line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"ID: {target_id}"))
         return
 
+    # 處理被標註的情況
+    if '@LINEBOT' in msg:
+        try:
+            # 取得發送者 User ID
+            user_id = event.source.user_id
+            # 取得使用者個人資料
+            profile = line_bot_api.get_profile(user_id)
+            user_name = profile.display_name
+            
+            # 取得問候語
+            greeting = get_greeting()
+            
+            reply_text = f"{user_name} {greeting}"
+            line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply_text))
+            
+        except Exception as e:
+            # 發生錯誤時的 fallback，例如無法取得 profile
+            greeting = get_greeting()
+            line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"{greeting} (無法取得暱稱)"))
+        return
+
     # 匯率查詢
     if msg in VALID_CURRENCIES:
         report = get_taiwan_bank_rates(msg)
