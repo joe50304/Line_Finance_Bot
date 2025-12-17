@@ -512,19 +512,19 @@ def generate_help_message():
                                         style='primary',
                                         height='sm',
                                         color='#2c3e50',
-                                        action=MessageAction(label='🇺🇸 美金匯率', text='USD')
+                                        action=MessageAction(label='🇺🇸 美金', text='USD')
                                     ),
                                     ButtonComponent(
                                         style='primary',
                                         height='sm',
                                         color='#2c3e50',
-                                        action=MessageAction(label='🇯🇵 日幣匯率', text='JPY')
+                                        action=MessageAction(label='🇯🇵 日幣', text='JPY')
                                     ),
                                     ButtonComponent(
                                         style='primary',
                                         height='sm',
                                         color='#2c3e50',
-                                        action=MessageAction(label='🇭🇰 港幣匯率', text='HKD')
+                                        action=MessageAction(label='🇭🇰 港幣', text='HKD')
                                     )
                                 ]
                             ),
@@ -535,17 +535,17 @@ def generate_help_message():
                                     ButtonComponent(
                                         style='secondary',
                                         height='sm',
-                                        action=MessageAction(label='📈 美金走勢', text='USD圖')
+                                        action=MessageAction(label='📈 美金', text='USD圖')
                                     ),
                                     ButtonComponent(
                                         style='secondary',
                                         height='sm',
-                                        action=MessageAction(label='📈 日幣走勢', text='JPY圖')
+                                        action=MessageAction(label='📈 日幣', text='JPY圖')
                                     ),
                                     ButtonComponent(
                                         style='secondary',
                                         height='sm',
-                                        action=MessageAction(label='📈 港幣走勢', text='HKD圖')
+                                        action=MessageAction(label='📈 港幣', text='HKD圖')
                                     )
                                 ]
                             ),
