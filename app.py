@@ -591,6 +591,7 @@ def generate_kline_chart_url(symbol, period="1mo", interval="1d", title_suffix="
                 # But with Category scale, 'x' is optional if order matches labels.
                 # Just o,h,l,c is fine.
                 ohlc_data.append({
+                    "x": date_str,
                     "o": row['Open'],
                     "h": row['High'],
                     "l": row['Low'],
