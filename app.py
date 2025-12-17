@@ -272,15 +272,26 @@ def generate_chart_url(dates, cash_rates, spot_rates, currency_code):
         }
     }
     
-    # 轉換成 URL 編碼的 JSON 字串
-    import json
-    import urllib.parse
-    
-    json_str = json.dumps(chart_config)
-    encoded_config = urllib.parse.quote(json_str)
-    
-    # 建構最終 URL
-    return f"https://quickchart.io/chart?c={encoded_config}"
+    # 改用 Short URL API (POST) 以避免 URL 過長 (超過 2000 字元)
+    try:
+        url = "https://quickchart.io/chart/create"
+        payload = {
+            "chart": chart_config,
+            "width": 800,
+            "height": 600,
+            "backgroundColor": "white"
+        }
+        headers = {'Content-Type': 'application/json'}
+        response = requests.post(url, json=payload, headers=headers)
+        
+        if response.status_code == 200:
+            return response.json().get('url')
+        else:
+            print(f"QuickChart Error: {response.text}")
+            return None
+    except Exception as e:
+        print(f"Error generating chart URL: {e}")
+        return None
 
 # --- 路由設定 ---
 @app.route("/", methods=['GET'])
