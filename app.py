@@ -476,7 +476,7 @@ def generate_stock_flex_message(data):
 
 def generate_kline_chart_url(symbol, period="1mo", interval="1d", title_suffix="日K"):
     """
-    產生 K 線圖 URL (QuickChart)
+    產生 K 線圖或即時走勢圖 URL (QuickChart)
     """
     try:
         stock = yf.Ticker(f"{symbol}.TW")
@@ -485,53 +485,93 @@ def generate_kline_chart_url(symbol, period="1mo", interval="1d", title_suffix="
         if hist.empty:
             return None
 
-        # 準備資料 for Candlestick
-        ohlc_data = []
-        dates = []
-        
-        # 限制資料點數 (QuickChart 限制 & 可讀性)
-        # 取最近 40 根 K 棒
-        recent_data = hist.tail(40)
-        
-        for index, row in recent_data.iterrows():
-            date_str = index.strftime('%Y-%m-%d')
-            dates.append(date_str)
-            ohlc_data.append({
-                "t": date_str, # Time (X-axis)
-                "o": row['Open'],
-                "h": row['High'],
-                "l": row['Low'],
-                "c": row['Close']
-            })
+        # -----------------------------------------------
+        # Case A: 即時走勢 (Intraday) -> 用 Line Chart
+        # -----------------------------------------------
+        if "即時" in title_suffix or interval in ['1m', '2m', '5m', '15m']:
+            # 取 Close Price
+            dates = []
+            prices = []
             
-        chart_config = {
-            "type": "candlestick",
-            "data": {
-                "datasets": [{
-                    "label": f"{symbol} {title_suffix}",
-                    "data": ohlc_data
-                }]
-            },
-            "options": {
-                 "title": {
-                    "display": True,
-                    "text": f"{symbol} {title_suffix}線圖"
+            # Intraday data index usually implies datetime
+            # Format time HH:MM
+            for index, row in hist.iterrows():
+                # index might be Timestamp
+                dt_str = index.strftime('%H:%M')
+                dates.append(dt_str)
+                prices.append(row['Close'])
+
+            chart_config = {
+                "type": "line",
+                "data": {
+                    "labels": dates,
+                    "datasets": [{
+                        "label": f"{symbol} 即時",
+                        "data": prices,
+                        "borderColor": "#eb4e3d", # Red for Line
+                        "fill": False,
+                        "pointRadius": 0, # Remove dots for smooth line
+                        "lineTension": 0.1
+                    }]
                 },
-                 "scales": {
-                    "y": {
-                        "ticks": {"beginAtZero": False} 
+                "options": {
+                    "title": {"display": True, "text": f"{symbol} 即時走勢 (Close)"},
+                    "scales": {
+                        "yAxes": [{"ticks": {"beginAtZero": False}}],
+                        "xAxes": [{"ticks": {"autoSkip": True, "maxTicksLimit": 10}}] # Limit x-axis labels
                     }
                 }
             }
-        }
+
+        # -----------------------------------------------
+        # Case B: 歷史 K 線 (Daily/Weekly/Monthly) -> Candlestick
+        # -----------------------------------------------
+        else:
+            # 準備資料 for Candlestick
+            ohlc_data = []
+            
+            # 限制資料點數 (QuickChart 限制 & 可讀性)
+            recent_data = hist.tail(60) # 上限 60 根
+            
+            # 必須提供 labels 確保 X 軸對齊
+            labels = []
+            
+            for index, row in recent_data.iterrows():
+                date_str = index.strftime('%Y-%m-%d')
+                labels.append(date_str)
+                ohlc_data.append({
+                    "x": date_str, # Use 'x' to match label? Or just rely on order.
+                    # QuickChart candlestick usually expects o, h, l, c
+                    "o": row['Open'],
+                    "h": row['High'],
+                    "l": row['Low'],
+                    "c": row['Close']
+                })
+                
+            chart_config = {
+                "type": "candlestick",
+                "data": {
+                    "labels": labels, # Explicit labels are safer
+                    "datasets": [{
+                        "label": f"{symbol} {title_suffix}",
+                        "data": ohlc_data
+                    }]
+                },
+                "options": {
+                     "title": {
+                        "display": True,
+                        "text": f"{symbol} {title_suffix}線圖"
+                    },
+                     "scales": {
+                        "y": {
+                            "ticks": {"beginAtZero": False} 
+                        }
+                    }
+                }
+            }
         
         # 使用 Short URL
         url = "https://quickchart.io/chart/create"
-        # 必須加入 chartjs-chart-financial plugin
-        # Note: QuickChart v2 supports it implicitly if 'type' is 'candlestick' or we define it?
-        # Let's try specifying version='2.9.4' probably, but standard 'candlestick' often works if valid config.
-        # Actually QuickChart documentation says we might need to load the plugin.
-        # However, for simplicity, let's try the standard candlestick type which is supported by many QC versions.
         
         payload = {
             "chart": chart_config,
@@ -547,7 +587,7 @@ def generate_kline_chart_url(symbol, period="1mo", interval="1d", title_suffix="
             return response.json().get('url')
         return None
     except Exception as e:
-        print(f"Error generating K-line: {e}")
+        print(f"Error generating chart: {e}")
         return None
 
 # --- 路由設定 ---
@@ -699,54 +739,62 @@ def handle_message(event):
         return
 
     # --- 台股指令處理 ---
-    # 1. 純數字: 即時報價 Flex Message
-    if msg.isdigit():
+    # 1. 股票代號查詢: 即時報價 Flex Message
+    # 放寬檢查: 只要是英數字且長度在 4~6 之間 (台股代號通常 4-6 碼)
+    if msg.isalnum() and 4 <= len(msg) <= 6:
+        # 排除誤判: 如果全是英文可能是貨幣或其他指令，簡單過濾
+        # e.g. "TEST" -> pass, "2330" -> ok, "00981A" -> ok
+        # 策略: 如果不是純數字，必須包含數字 (e.g. 00981A)
+        # 或者乾脆都試試看 get_stock_info，失敗就算了
+        
         stock_data = get_stock_info(msg)
         if stock_data:
             flex_msg = generate_stock_flex_message(stock_data)
             line_bot_api.reply_message(event.reply_token, flex_msg)
-        else:
-            line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"找不到代號 {msg} 的資料"))
-        return
-
-    # 2. 股票詳細指令 (e.g., 2330 即時, 2330 日K)
+            return
+        # 如果找不到資料，就讓它 pass，避免誤觸其他邏輯
+        
+    # 2. 股票詳細指令 (e.g., 2330 即時, 2330 日K, 00981A 日K)
     # 檢查是否為 "{代號} {指令}" 格式
     parts = msg.split()
-    if len(parts) >= 2 and parts[0].isdigit():
+    if len(parts) >= 2:
         symbol = parts[0]
-        cmd = parts[1]
-        
-        url = None
-        # 即時走勢 (當日)
-        if '即時' in cmd:
-            # 取得當日走勢 (1d, 5m or 1m)
-            url = generate_kline_chart_url(symbol, period="1d", interval="5m", title_suffix="即時走勢")
-        
-        # K線圖
-        elif 'K' in cmd:
-            period = "1mo"
-            interval = "1d"
-            suffix = "日K"
+        # 檢查 symbol 是否為合法代號 (英數字)
+        if symbol.isalnum() and 4 <= len(symbol) <= 6:
+            cmd = parts[1]
             
-            if '日' in cmd:
+            url = None
+            # 即時走勢 (當日)
+            if '即時' in cmd:
+                # 取得當日走勢 (1d, 5m)
+                url = generate_kline_chart_url(symbol, period="1d", interval="5m", title_suffix="即時走勢")
+            
+            # K線圖
+            elif 'K' in cmd:
+                period = "1mo"
+                interval = "1d"
                 suffix = "日K"
-                period = "3mo" # default 3 months for daily
-            elif '週' in cmd:
-                suffix = "週K"
-                period = "1y"  # 1 year for weekly
-                interval = "1wk"
-            elif '月' in cmd:
-                suffix = "月K"
-                period = "5y"  # 5 years for monthly
-                interval = "1mo"
                 
-            url = generate_kline_chart_url(symbol, period, interval, suffix)
-            
-        if url:
-            line_bot_api.reply_message(event.reply_token, ImageSendMessage(original_content_url=url, preview_image_url=url))
-        else:
-            line_bot_api.reply_message(event.reply_token, TextSendMessage(text="無法產生圖表 (無資料或連線錯誤)"))
-        return
+                if '日' in cmd:
+                    suffix = "日K"
+                    period = "3mo" # default 3 months for daily
+                elif '週' in cmd:
+                    suffix = "週K"
+                    period = "1y"  # 1 year for weekly
+                    interval = "1wk"
+                elif '月' in cmd:
+                    suffix = "月K"
+                    period = "5y"  # 5 years for monthly
+                    interval = "1mo"
+                    
+                url = generate_kline_chart_url(symbol, period, interval, suffix)
+                
+            if url:
+                line_bot_api.reply_message(event.reply_token, ImageSendMessage(original_content_url=url, preview_image_url=url))
+            else:
+                # 失敗時回報，方便除錯
+                line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"無法產生 {symbol} 圖表 (無資料或 API 錯誤)"))
+            return
 
     # 其他情況保持安靜
     else:
