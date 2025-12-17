@@ -6,7 +6,7 @@ import pytz  # 用來處理時區
 from flask import Flask, request, abort
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
-from linebot.models import MessageEvent, TextMessage, TextSendMessage, JoinEvent
+from linebot.models import MessageEvent, TextMessage, TextSendMessage, JoinEvent, ImageSendMessage
 
 app = Flask(__name__)
 
@@ -123,6 +123,148 @@ def get_taiwan_bank_rates(currency_code="HKD"):
     except Exception as e:
         return f"查詢失敗: {str(e)}"
 
+def get_historical_data(currency_code="USD"):
+    """
+    從 historical.findrate.tw 抓取歷史匯率
+    回傳 (dates, cash_rates, spot_rates)
+    """
+    try:
+        url = f"https://historical.findrate.tw/his.php?c={currency_code}"
+        dfs = pd.read_html(url)
+        
+        # 尋找包含匯率的表格
+        target_df = None
+        for df in dfs:
+            # 判斷邏輯: 檢查欄位是否包含匯率相關字眼，或者欄位數量正確
+            # 用戶回饋日期欄位可能空白，且有現鈔/即期
+            # 通常表格結構: [日期, 即期買入, 即期賣出, 現鈔買入, 現鈔賣出]
+            if len(df.columns) >= 5:
+                # 簡單檢查一下內容是否像日期
+                try:
+                    first_val = str(df.iloc[0, 0])
+                    if '20' in first_val and '-' in first_val: # 2024-xx-xx
+                        target_df = df
+                        break
+                except:
+                    continue
+        
+        if target_df is None:
+            return None, None, None
+
+        # 資料前處理
+        dates = []
+        cash_rates = []
+        spot_rates = []
+        
+        # 只需要最近 30 筆
+        recent_data = target_df.head(30).iloc[::-1]
+        
+        for index, row in recent_data.iterrows():
+            try:
+                # 假設第一欄是日期，不管欄位名稱
+                date = str(row.iloc[0])
+                
+                # 嘗試抓取 "現鈔賣出" 和 "即期賣出"
+                # 因為欄位名稱可能很亂或空白，這裡嘗試用 column name matching
+                
+                c_rate = None
+                s_rate = None
+                
+                # 尋找 "現鈔賣出" 所在的 column index
+                # 如果沒有 Header，可能需要 Hardcode 索引
+                # findrate 歷史頁面通常: 日期 | 即期買入 | 即期賣出 | 現鈔買入 | 現鈔賣出
+                # 索引: 0 | 1 | 2 | 3 | 4
+                
+                # 嘗試用位置取值 (比較保險)
+                if len(row) >= 5:
+                    s_rate_raw = row.iloc[2] # 即期賣出
+                    c_rate_raw = row.iloc[4] # 現鈔賣出
+                    
+                    # 處理 '--' 的情況
+                    if str(s_rate_raw).strip() != '--':
+                        s_rate = float(s_rate_raw)
+                    
+                    if str(c_rate_raw).strip() != '--':
+                        c_rate = float(c_rate_raw)
+                
+                # 如果用 DataFrame header 抓得到更好
+                if '即期賣出' in row: s_rate = float(row['即期賣出'])
+                if '現鈔賣出' in row: c_rate = float(row['現鈔賣出'])
+
+                if date:
+                    dates.append(date)
+                    cash_rates.append(c_rate) # 可能為 None
+                    spot_rates.append(s_rate) # 可能為 None
+            except:
+                continue
+                
+        return dates, cash_rates, spot_rates
+    except Exception as e:
+        print(f"Error fetching history: {e}")
+        return None, None, None
+
+def generate_chart_url(dates, cash_rates, spot_rates, currency_code):
+    """
+    使用 QuickChart.io 產生圖表 URL (雙線圖)
+    """
+    if not dates:
+        return None
+        
+    datasets = []
+    
+    # 加入現鈔賣出折線 (如果有資料)
+    # 過濾 None 值 (QuickChart/Chart.js 可以處理 null，但最好是連貫的)
+    if any(cash_rates):
+        datasets.append({
+            "label": "現鈔賣出",
+            "data": cash_rates,
+            "borderColor": "rgb(255, 99, 132)", # 紅色
+            "backgroundColor": "rgba(255, 99, 132, 0.5)",
+            "fill": False,
+        })
+        
+    # 加入即期賣出折線
+    if any(spot_rates):
+        datasets.append({
+            "label": "即期賣出",
+            "data": spot_rates,
+            "borderColor": "rgb(54, 162, 235)", # 藍色
+            "backgroundColor": "rgba(54, 162, 235, 0.5)",
+            "fill": False,
+        })
+
+    if not datasets:
+        return None
+
+    # QuickChart 設定
+    chart_config = {
+        "type": "line",
+        "data": {
+            "labels": dates,
+            "datasets": datasets
+        },
+        "options": {
+            "title": {
+                "display": True,
+                "text": f"{currency_code}/TWD 近期匯率走勢"
+            },
+            "interaction": {
+                "mode": 'index',
+                "intersect": False,
+            }
+        }
+    }
+    
+    # 轉換成 URL 編碼的 JSON 字串
+    import json
+    import urllib.parse
+    
+    json_str = json.dumps(chart_config)
+    encoded_config = urllib.parse.quote(json_str)
+    
+    # 建構最終 URL
+    return f"https://quickchart.io/chart?c={encoded_config}"
+
 # --- 路由設定 ---
 @app.route("/", methods=['GET'])
 def home():
@@ -223,6 +365,10 @@ def handle_message(event):
             # 取得問候語
             greeting = get_greeting()
             
+            # 特殊稱號邏輯
+            # 針對每個使用者後面都加大帥哥 (Modified request)
+            user_name += " 大帥哥"
+            
             reply_text = f"{user_name} {greeting}"
             line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply_text))
             return
@@ -236,7 +382,35 @@ def handle_message(event):
     if msg in VALID_CURRENCIES:
         report = get_taiwan_bank_rates(msg)
         line_bot_api.reply_message(event.reply_token, TextSendMessage(text=report))
+        return
+
+    # 匯率走勢圖指令
+    # 支援: "USD圖", "USD 走勢", "USD CHART", "美金圖" ... etc
+    # 簡單起見，檢查是否包含 currency code 且 (長度 > 3)
+    # 或者 users natural language: "可以去觀察一段時間的匯率 並畫出折線圖嗎" -> 太複雜，先做 suffix
     
+    chart_currency = None
+    if '圖' in msg or '走勢' in msg or 'CHART' in msg:
+        for cur in VALID_CURRENCIES:
+            if cur in msg:
+                chart_currency = cur
+                break
+    
+    if chart_currency:
+        dates, cash_rates, spot_rates = get_historical_data(chart_currency)
+        if dates and (any(cash_rates) or any(spot_rates)):
+            chart_url = generate_chart_url(dates, cash_rates, spot_rates, chart_currency)
+            if chart_url:
+                line_bot_api.reply_message(event.reply_token, ImageSendMessage(
+                    original_content_url=chart_url,
+                    preview_image_url=chart_url
+                ))
+            else:
+                line_bot_api.reply_message(event.reply_token, TextSendMessage(text="產生圖表失敗"))
+        else:
+            line_bot_api.reply_message(event.reply_token, TextSendMessage(text="無法取得歷史數據 (可能無該幣別資料)"))
+        return
+
     # 其他情況保持安靜
     else:
         pass
