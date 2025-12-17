@@ -268,6 +268,33 @@ def generate_chart_url(dates, cash_rates, spot_rates, currency_code):
             "interaction": {
                 "mode": 'index',
                 "intersect": False,
+            },
+            "scales": {
+                # 確保 Y 軸不會從 0 開始，而是根據數據自動調整 (讓起伏更明顯)
+                "yAxes": [{
+                    "ticks": {
+                        "beginAtZero": False
+                    }
+                }],
+                "xAxes": [{
+                    "ticks": {
+                        "autoSkip": True,
+                        "maxTicksLimit": 10
+                    }
+                }]
+            },
+            "elements": {
+                "line": {
+                    "tension": 0 # 直線，不平滑化
+                }
+            },
+            "layout": {
+                "padding": {
+                    "left": 10,
+                    "right": 10,
+                    "top": 10,
+                    "bottom": 10
+                }
             }
         }
     }
