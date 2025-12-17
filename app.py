@@ -800,11 +800,18 @@ def handle_message(event):
                         preview_image_url=chart_url
                     ))
                 else:
-                    line_bot_api.reply_message(event.reply_token, TextSendMessage(text="產生圖表失敗 (URL Error)"))
+                    # 只有非常明確的指令才回報錯誤，避免誤判
+                    # 但目前的觸發條件 ('圖'/'走勢'/'CHART' + 幣別) 其實已經算明確
+                    # 為了符合用戶「篩選」需求，這裡選擇安靜失敗，或是僅記錄 Log
+                    print(f"Failed to generate chart URL for {chart_currency}")
+                    pass
             else:
-                line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"無法取得 {chart_currency} 歷史數據 (無資料)"))
+                # 查無資料 -> 安靜
+                print(f"No historical data for {chart_currency}")
+                pass
         except Exception as e:
-            line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"處理圖表時發生錯誤: {str(e)}"))
+            print(f"Error handling currency chart: {e}")
+            pass
         return
 
     # --- 台股指令處理 ---
@@ -861,13 +868,22 @@ def handle_message(event):
                     interval = "1mo"
                     
                 url = generate_kline_chart_url(symbol, period, interval, suffix)
-                
-            if url:
-                line_bot_api.reply_message(event.reply_token, ImageSendMessage(original_content_url=url, preview_image_url=url))
+            
+            # 只有當真的有對應的指令觸發且 url 有值時才回傳
+            # 或者，若確定是用戶意圖查圖 (包含關鍵字) 但失敗，才回傳錯誤
+            target_cmds = ['即時', '交易量', 'K']
+            is_valid_cmd = any(k in cmd for k in target_cmds)
+            
+            if is_valid_cmd:
+                if url:
+                    line_bot_api.reply_message(event.reply_token, ImageSendMessage(original_content_url=url, preview_image_url=url))
+                else:
+                    # 用戶意圖明確，但 API 失敗 -> 回報錯誤
+                    line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"無法產生 {symbol} 圖表 (無資料或 API 錯誤)"))
+                return
             else:
-                # 失敗時回報，方便除錯
-                line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"無法產生 {symbol} 圖表 (無資料或 API 錯誤)"))
-            return
+                # 關鍵字不符 -> 視為一般對話，Pass
+                pass
 
     # 其他情況保持安靜
     else:
