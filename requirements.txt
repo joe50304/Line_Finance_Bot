@@ -7,3 +7,4 @@ numpy<2.0.0
 lxml
 html5lib
 pytz
+yfinance

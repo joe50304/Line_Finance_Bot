@@ -3,10 +3,15 @@ import requests
 import pandas as pd
 from datetime import datetime
 import pytz  # 用來處理時區
+import yfinance as yf
 from flask import Flask, request, abort
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
-from linebot.models import MessageEvent, TextMessage, TextSendMessage, JoinEvent, ImageSendMessage
+from linebot.models import (
+    MessageEvent, TextMessage, TextSendMessage, JoinEvent, ImageSendMessage,
+    FlexSendMessage, BubbleContainer, BoxComponent, TextComponent, ButtonComponent,
+    PostbackAction, MessageAction, SeparatorComponent
+)
 
 app = Flask(__name__)
 
@@ -285,7 +290,7 @@ def generate_chart_url(dates, cash_rates, spot_rates, currency_code):
             },
             "elements": {
                 "line": {
-                    "tension": 0 # 直線，不平滑化
+                    "tension": 0
                 }
             },
             "layout": {
@@ -320,11 +325,235 @@ def generate_chart_url(dates, cash_rates, spot_rates, currency_code):
         print(f"Error generating chart URL: {e}")
         return None
 
+def get_stock_info(symbol):
+    """
+    取得台股即時資訊 (Yahoo Finance)
+    """
+    try:
+        stock = yf.Ticker(f"{symbol}.TW")
+        # fast_info 通常比 info 快且欄位較穩定
+        info = stock.fast_info
+        
+        # 取得基本資料
+        current_price = info.last_price
+        prev_close = info.previous_close
+        
+        # 計算漲跌
+        change = current_price - prev_close
+        change_percent = (change / prev_close) * 100
+        
+        # 漲跌停價格 (台股 10%)
+        limit_up = prev_close * 1.10
+        limit_down = prev_close * 0.90
+        
+        # 其他資訊
+        volume = info.last_volume
+        day_high = info.day_high
+        day_low = info.day_low
+        
+        try:
+            detailed_info = stock.info
+            avg_price = detailed_info.get('fiftyDayAverage', 0)
+            name = detailed_info.get('longName', symbol)
+        except:
+            avg_price = 0
+            name = symbol
+            
+        return {
+            "symbol": symbol,
+            "name": name,
+            "price": current_price,
+            "change": change,
+            "change_percent": change_percent,
+            "limit_up": limit_up,
+            "limit_down": limit_down,
+            "volume": volume,
+            "high": day_high,
+            "low": day_low,
+            "avg_price": avg_price
+        }
+    except Exception as e:
+        print(f"Error fetching stock info: {e}")
+        return None
+
+def generate_stock_flex_message(data):
+    """
+    產生台股資訊 Flex Message
+    """
+    symbol = data['symbol']
+    name = data['name']
+    price = data['price']
+    change = data['change']
+    percent = data['change_percent']
+    
+    # 顏色邏輯
+    if change > 0:
+        color = "#eb4e3d" # Red
+        sign = "+"
+    elif change < 0:
+        color = "#27ba46" # Green
+        sign = ""
+    else:
+        color = "#333333" # Black
+        sign = ""
+        
+    return FlexSendMessage(
+        alt_text=f"{name} 股價資訊",
+        contents=BubbleContainer(
+            body=BoxComponent(
+                layout='vertical',
+                contents=[
+                    TextComponent(text=f"{name} ({symbol})", weight='bold', size='xl'),
+                    BoxComponent(
+                        layout='baseline',
+                        margin='md',
+                        contents=[
+                            TextComponent(text=f"{price:.2f}", weight='bold', size='3xl', color=color),
+                            TextComponent(text=f"{sign}{change:.2f} ({sign}{percent:.2f}%)", size='sm', color=color, margin='md', flex=0)
+                        ]
+                    ),
+                    SeparatorComponent(margin='lg'),
+                    BoxComponent(
+                        layout='vertical',
+                        margin='lg',
+                        spacing='sm',
+                        contents=[
+                            BoxComponent(
+                                layout='baseline',
+                                contents=[
+                                    TextComponent(text="漲停", color='#aaaaaa', size='sm', flex=1),
+                                    TextComponent(text=f"{data['limit_up']:.2f}", align='end', color='#eb4e3d', size='sm', flex=2),
+                                    TextComponent(text="跌停", color='#aaaaaa', size='sm', flex=1),
+                                    TextComponent(text=f"{data['limit_down']:.2f}", align='end', color='#27ba46', size='sm', flex=2)
+                                ]
+                            ),
+                            BoxComponent(
+                                layout='baseline',
+                                contents=[
+                                    TextComponent(text="最高", color='#aaaaaa', size='sm', flex=1),
+                                    TextComponent(text=f"{data['high']:.2f}", align='end', size='sm', flex=2),
+                                    TextComponent(text="最低", color='#aaaaaa', size='sm', flex=1),
+                                    TextComponent(text=f"{data['low']:.2f}", align='end', size='sm', flex=2)
+                                ]
+                            ),
+                            BoxComponent(
+                                layout='baseline',
+                                contents=[
+                                    TextComponent(text="總量", color='#aaaaaa', size='sm', flex=1),
+                                    TextComponent(text=f"{data['volume']:,.0f}", align='end', size='sm', flex=2),
+                                    TextComponent(text="50日均", color='#aaaaaa', size='sm', flex=1),
+                                    TextComponent(text=f"{(data.get('avg_price') or 0):.2f}", align='end', size='sm', flex=2)
+                                ]
+                            )
+                        ]
+                    ),
+                    SeparatorComponent(margin='lg'),
+                    BoxComponent(
+                        layout='vertical',
+                        margin='md',
+                        spacing='sm',
+                        contents=[
+                            ButtonComponent(
+                                style='primary',
+                                height='sm',
+                                action=MessageAction(label='即時走勢圖', text=f'{symbol} 即時')
+                            ),
+                            BoxComponent(
+                                layout='horizontal',
+                                spacing='sm',
+                                contents=[
+                                    ButtonComponent(style='secondary', height='sm', action=MessageAction(label='日 K', text=f'{symbol} 日K')),
+                                    ButtonComponent(style='secondary', height='sm', action=MessageAction(label='週 K', text=f'{symbol} 週K')),
+                                    ButtonComponent(style='secondary', height='sm', action=MessageAction(label='月 K', text=f'{symbol} 月K'))
+                                ]
+                            )
+                        ]
+                    )
+                ]
+            )
+        )
+    )
+
+def generate_kline_chart_url(symbol, period="1mo", interval="1d", title_suffix="日K"):
+    """
+    產生 K 線圖 URL (QuickChart)
+    """
+    try:
+        stock = yf.Ticker(f"{symbol}.TW")
+        hist = stock.history(period=period, interval=interval)
+        
+        if hist.empty:
+            return None
+
+        # 準備資料 for Candlestick
+        ohlc_data = []
+        dates = []
+        
+        # 限制資料點數 (QuickChart 限制 & 可讀性)
+        # 取最近 40 根 K 棒
+        recent_data = hist.tail(40)
+        
+        for index, row in recent_data.iterrows():
+            date_str = index.strftime('%Y-%m-%d')
+            dates.append(date_str)
+            ohlc_data.append({
+                "t": date_str, # Time (X-axis)
+                "o": row['Open'],
+                "h": row['High'],
+                "l": row['Low'],
+                "c": row['Close']
+            })
+            
+        chart_config = {
+            "type": "candlestick",
+            "data": {
+                "datasets": [{
+                    "label": f"{symbol} {title_suffix}",
+                    "data": ohlc_data
+                }]
+            },
+            "options": {
+                 "title": {
+                    "display": True,
+                    "text": f"{symbol} {title_suffix}線圖"
+                },
+                 "scales": {
+                    "y": {
+                        "ticks": {"beginAtZero": False} 
+                    }
+                }
+            }
+        }
+        
+        # 使用 Short URL
+        url = "https://quickchart.io/chart/create"
+        # 必須加入 chartjs-chart-financial plugin
+        # Note: QuickChart v2 supports it implicitly if 'type' is 'candlestick' or we define it?
+        # Let's try specifying version='2.9.4' probably, but standard 'candlestick' often works if valid config.
+        # Actually QuickChart documentation says we might need to load the plugin.
+        # However, for simplicity, let's try the standard candlestick type which is supported by many QC versions.
+        
+        payload = {
+            "chart": chart_config,
+            "width": 800,
+            "height": 600,
+            "backgroundColor": "white"
+        }
+        
+        headers = {'Content-Type': 'application/json'}
+        response = requests.post(url, json=payload, headers=headers)
+        
+        if response.status_code == 200:
+            return response.json().get('url')
+        return None
+    except Exception as e:
+        print(f"Error generating K-line: {e}")
+        return None
+
 # --- 路由設定 ---
 @app.route("/", methods=['GET'])
 def home():
     return "Hello! I am alive!", 200
-
 @app.route("/callback", methods=['POST'])
 def callback():
     signature = request.headers['X-Line-Signature']
@@ -467,6 +696,56 @@ def handle_message(event):
                 line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"無法取得 {chart_currency} 歷史數據 (無資料)"))
         except Exception as e:
             line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"處理圖表時發生錯誤: {str(e)}"))
+        return
+
+    # --- 台股指令處理 ---
+    # 1. 純數字: 即時報價 Flex Message
+    if msg.isdigit():
+        stock_data = get_stock_info(msg)
+        if stock_data:
+            flex_msg = generate_stock_flex_message(stock_data)
+            line_bot_api.reply_message(event.reply_token, flex_msg)
+        else:
+            line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"找不到代號 {msg} 的資料"))
+        return
+
+    # 2. 股票詳細指令 (e.g., 2330 即時, 2330 日K)
+    # 檢查是否為 "{代號} {指令}" 格式
+    parts = msg.split()
+    if len(parts) >= 2 and parts[0].isdigit():
+        symbol = parts[0]
+        cmd = parts[1]
+        
+        url = None
+        # 即時走勢 (當日)
+        if '即時' in cmd:
+            # 取得當日走勢 (1d, 5m or 1m)
+            url = generate_kline_chart_url(symbol, period="1d", interval="5m", title_suffix="即時走勢")
+        
+        # K線圖
+        elif 'K' in cmd:
+            period = "1mo"
+            interval = "1d"
+            suffix = "日K"
+            
+            if '日' in cmd:
+                suffix = "日K"
+                period = "3mo" # default 3 months for daily
+            elif '週' in cmd:
+                suffix = "週K"
+                period = "1y"  # 1 year for weekly
+                interval = "1wk"
+            elif '月' in cmd:
+                suffix = "月K"
+                period = "5y"  # 5 years for monthly
+                interval = "1mo"
+                
+            url = generate_kline_chart_url(symbol, period, interval, suffix)
+            
+        if url:
+            line_bot_api.reply_message(event.reply_token, ImageSendMessage(original_content_url=url, preview_image_url=url))
+        else:
+            line_bot_api.reply_message(event.reply_token, TextSendMessage(text="無法產生圖表 (無資料或連線錯誤)"))
         return
 
     # 其他情況保持安靜
