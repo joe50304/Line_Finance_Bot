@@ -135,15 +135,32 @@ def get_historical_data(currency_code="USD"):
         # 尋找包含匯率的表格
         target_df = None
         for df in dfs:
-            # 判斷邏輯: 檢查欄位是否包含匯率相關字眼，或者欄位數量正確
-            # 用戶回饋日期欄位可能空白，且有現鈔/即期
-            # 通常表格結構: [日期, 即期買入, 即期賣出, 現鈔買入, 現鈔賣出]
+            # 判斷邏輯: 檢查欄位數量 >= 5
             if len(df.columns) >= 5:
-                # 簡單檢查一下內容是否像日期
+                # 寬鬆檢查: 只要第 3 欄 (即期賣出) 或 第 5 欄 (現鈔賣出) 看起來是數字
+                # 或者第一欄包含 "日期" (header)
                 try:
-                    first_val = str(df.iloc[0, 0])
-                    if '20' in first_val and '-' in first_val: # 2024-xx-xx
+                    # Check headers
+                    if "日期" in str(df.columns):
                         target_df = df
+                        break
+                        
+                    # Check content numeric
+                    # Check first few rows
+                    for i in range(min(3, len(df))):
+                        row = df.iloc[i]
+                        # check if col 2 or 4 is float-able
+                        try:
+                            float(row.iloc[2]) 
+                            target_df = df
+                            break
+                        except:
+                            try:
+                                float(row.iloc[4])
+                                target_df = df
+                                break
+                            except: pass
+                    if target_df is not None:
                         break
                 except:
                     continue
@@ -397,18 +414,21 @@ def handle_message(event):
                 break
     
     if chart_currency:
-        dates, cash_rates, spot_rates = get_historical_data(chart_currency)
-        if dates and (any(cash_rates) or any(spot_rates)):
-            chart_url = generate_chart_url(dates, cash_rates, spot_rates, chart_currency)
-            if chart_url:
-                line_bot_api.reply_message(event.reply_token, ImageSendMessage(
-                    original_content_url=chart_url,
-                    preview_image_url=chart_url
-                ))
+        try:
+            dates, cash_rates, spot_rates = get_historical_data(chart_currency)
+            if dates and (any(cash_rates) or any(spot_rates)):
+                chart_url = generate_chart_url(dates, cash_rates, spot_rates, chart_currency)
+                if chart_url:
+                    line_bot_api.reply_message(event.reply_token, ImageSendMessage(
+                        original_content_url=chart_url,
+                        preview_image_url=chart_url
+                    ))
+                else:
+                    line_bot_api.reply_message(event.reply_token, TextSendMessage(text="產生圖表失敗 (URL Error)"))
             else:
-                line_bot_api.reply_message(event.reply_token, TextSendMessage(text="產生圖表失敗"))
-        else:
-            line_bot_api.reply_message(event.reply_token, TextSendMessage(text="無法取得歷史數據 (可能無該幣別資料)"))
+                line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"無法取得 {chart_currency} 歷史數據 (無資料)"))
+        except Exception as e:
+            line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"處理圖表時發生錯誤: {str(e)}"))
         return
 
     # 其他情況保持安靜
