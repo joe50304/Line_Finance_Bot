@@ -466,6 +466,11 @@ def generate_stock_flex_message(data):
                                     ButtonComponent(style='secondary', height='sm', action=MessageAction(label='週 K', text=f'{symbol} 週K')),
                                     ButtonComponent(style='secondary', height='sm', action=MessageAction(label='月 K', text=f'{symbol} 月K'))
                                 ]
+                            ),
+                            ButtonComponent(
+                                style='link',
+                                height='sm',
+                                action=MessageAction(label='近3日交易量', text=f'{symbol} 交易量')
                             )
                         ]
                     )
@@ -476,7 +481,7 @@ def generate_stock_flex_message(data):
 
 def generate_kline_chart_url(symbol, period="1mo", interval="1d", title_suffix="日K"):
     """
-    產生 K 線圖或即時走勢圖 URL (QuickChart)
+    產生 K 線圖、即時走勢圖或成交量圖 URL (QuickChart)
     """
     try:
         stock = yf.Ticker(f"{symbol}.TW")
@@ -486,17 +491,13 @@ def generate_kline_chart_url(symbol, period="1mo", interval="1d", title_suffix="
             return None
 
         # -----------------------------------------------
-        # Case A: 即時走勢 (Intraday) -> 用 Line Chart
+        # Case A: 即時走勢 (Intraday) -> Line Chart
         # -----------------------------------------------
         if "即時" in title_suffix or interval in ['1m', '2m', '5m', '15m']:
-            # 取 Close Price
+            # ... (Previous Line Chart Logic) ...
             dates = []
             prices = []
-            
-            # Intraday data index usually implies datetime
-            # Format time HH:MM
             for index, row in hist.iterrows():
-                # index might be Timestamp
                 dt_str = index.strftime('%H:%M')
                 dates.append(dt_str)
                 prices.append(row['Close'])
@@ -508,9 +509,10 @@ def generate_kline_chart_url(symbol, period="1mo", interval="1d", title_suffix="
                     "datasets": [{
                         "label": f"{symbol} 即時",
                         "data": prices,
-                        "borderColor": "#eb4e3d", # Red for Line
+                        "borderColor": "#eb4e3d",
                         "fill": False,
-                        "pointRadius": 0, # Remove dots for smooth line
+                        "pointRadius": 0,
+                        "borderWidth": 2,
                         "lineTension": 0.1
                     }]
                 },
@@ -518,66 +520,117 @@ def generate_kline_chart_url(symbol, period="1mo", interval="1d", title_suffix="
                     "title": {"display": True, "text": f"{symbol} 即時走勢 (Close)"},
                     "scales": {
                         "yAxes": [{"ticks": {"beginAtZero": False}}],
-                        "xAxes": [{"ticks": {"autoSkip": True, "maxTicksLimit": 10}}] # Limit x-axis labels
+                        "xAxes": [{"ticks": {"autoSkip": True, "maxTicksLimit": 10}}] 
                     }
                 }
             }
+            version = '2.9.4' # Line chart works fine on v2
 
         # -----------------------------------------------
-        # Case B: 歷史 K 線 (Daily/Weekly/Monthly) -> Candlestick
+        # Case B: 三日交易量 (Volume) -> Bar Chart
+        # -----------------------------------------------
+        elif "交易量" in title_suffix:
+            # 取最近 3 天
+            recent_data = hist.tail(3)
+            labels = []
+            volumes = []
+            colors = []
+            
+            for index, row in recent_data.iterrows():
+                date_str = index.strftime('%m/%d')
+                labels.append(date_str)
+                vol = row['Volume']
+                volumes.append(vol)
+                # Color based on price change (approx)
+                # Simple logic: positive close-open usually red, else green.
+                # Just fix to Gray/Blue for volume to avoid confusion? 
+                # Or use Red/Green (Red=Up).
+                if row['Close'] >= row['Open']:
+                    colors.append('rgba(235, 78, 61, 0.7)') # Red
+                else:
+                    colors.append('rgba(39, 186, 70, 0.7)') # Green
+
+            chart_config = {
+                "type": "bar",
+                "data": {
+                    "labels": labels,
+                    "datasets": [{
+                        "label": "成交量",
+                        "data": volumes,
+                        "backgroundColor": colors
+                    }]
+                },
+                "options": {
+                    "title": {"display": True, "text": f"{symbol} 近三日成交量"},
+                    "scales": {
+                        "yAxes": [{"ticks": {"beginAtZero": True}}]
+                    },
+                    "legend": {"display": False}
+                }
+            }
+            version = '2.9.4'
+
+        # -----------------------------------------------
+        # Case C: 歷史 K 線 (Candlestick) -> Candlestick Chart
         # -----------------------------------------------
         else:
-            # 準備資料 for Candlestick
+            # ... (Previous Candlestick logic) ...
             ohlc_data = []
-            
-            # 限制資料點數 (QuickChart 限制 & 可讀性)
-            recent_data = hist.tail(60) # 上限 60 根
-            
-            # 必須提供 labels 確保 X 軸對齊
+            recent_data = hist.tail(60)
             labels = []
             
             for index, row in recent_data.iterrows():
+                # 注意: QuickChart v3 plugin 格式可能需要 'x', 'o', 'h', 'l', 'c'
                 date_str = index.strftime('%Y-%m-%d')
                 labels.append(date_str)
                 ohlc_data.append({
-                    "x": date_str, # Use 'x' to match label? Or just rely on order.
-                    # QuickChart candlestick usually expects o, h, l, c
+                    "x": date_str, 
                     "o": row['Open'],
                     "h": row['High'],
                     "l": row['Low'],
                     "c": row['Close']
                 })
-                
+            
             chart_config = {
                 "type": "candlestick",
                 "data": {
-                    "labels": labels, # Explicit labels are safer
+                    "labels": labels, 
                     "datasets": [{
-                        "label": f"{symbol} {title_suffix}",
-                        "data": ohlc_data
+                        "label": f"{symbol}", # Suffix removed to save space
+                        "data": ohlc_data,
+                        # Candlestick colors
+                        "color": {
+                            "up": "#eb4e3d",
+                            "down": "#27ba46",
+                            "unchanged": "#999"
+                        }
                     }]
                 },
                 "options": {
-                     "title": {
-                        "display": True,
-                        "text": f"{symbol} {title_suffix}線圖"
-                    },
+                     "plugins": {
+                        "title": { # v3 syntax
+                            "display": True,
+                            "text": f"{symbol} {title_suffix}"
+                        },
+                        "legend": {"display": False}
+                     },
                      "scales": {
-                        "y": {
+                        "y": { # v3 syntax
                             "ticks": {"beginAtZero": False} 
                         }
                     }
                 }
             }
-        
-        # 使用 Short URL
+            version = '3' # Force v3 for better candlestick support
+
+        # API Call
         url = "https://quickchart.io/chart/create"
-        
         payload = {
             "chart": chart_config,
             "width": 800,
             "height": 600,
-            "backgroundColor": "white"
+            "backgroundColor": "white",
+            "version": version # Specify version
         }
         
         headers = {'Content-Type': 'application/json'}
@@ -768,6 +821,10 @@ def handle_message(event):
             if '即時' in cmd:
                 # 取得當日走勢 (1d, 5m)
                 url = generate_kline_chart_url(symbol, period="1d", interval="5m", title_suffix="即時走勢")
+            
+            # 交易量
+            elif '交易量' in cmd:
+                url = generate_kline_chart_url(symbol, period="5d", interval="1d", title_suffix="交易量")
             
             # K線圖
             elif 'K' in cmd:
