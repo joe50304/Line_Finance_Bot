@@ -487,7 +487,7 @@ def generate_kline_chart_url(symbol, period="1mo", interval="1d", title_suffix="
         stock = yf.Ticker(f"{symbol}.TW")
         hist = stock.history(period=period, interval=interval)
         
-        # 如果當日無資料 (e.g. 尚未開盤或剛開盤)，嘗試抓最近 5 天 (Intraday fallback)
+        # Intraday Fallback: If "即時" and empty, try 5d to get last valid session
         if hist.empty and "即時" in title_suffix:
             hist = stock.history(period="5d", interval=interval)
             
@@ -495,10 +495,10 @@ def generate_kline_chart_url(symbol, period="1mo", interval="1d", title_suffix="
             return None
 
         # -----------------------------------------------
-        # Case A: 即時走勢 (Intraday) -> Line Chart
+        # Case A: 即時走勢 (Intraday) -> Line Chart (v2)
         # -----------------------------------------------
         if "即時" in title_suffix or interval in ['1m', '2m', '5m', '15m']:
-            # 只取最後一天的資料 (如果是 5d fallback，需過濾)
+            # Filter to last available day
             if not hist.empty:
                last_day = hist.index[-1].date()
                hist = hist[hist.index.date == last_day]
@@ -515,7 +515,7 @@ def generate_kline_chart_url(symbol, period="1mo", interval="1d", title_suffix="
                 "data": {
                     "labels": dates,
                     "datasets": [{
-                        "label": f"{symbol} 即時 ({dates[-1] if dates else ''})",
+                        "label": f"{symbol} 即時",
                         "data": prices,
                         "borderColor": "#eb4e3d",
                         "backgroundColor": "rgba(235, 78, 61, 0.1)",
@@ -537,7 +537,7 @@ def generate_kline_chart_url(symbol, period="1mo", interval="1d", title_suffix="
             version = '2.9.4' 
 
         # -----------------------------------------------
-        # Case B: 三日交易量 (Volume) -> Bar Chart
+        # Case B: 三日交易量 (Volume) -> Bar Chart (v2)
         # -----------------------------------------------
         elif "交易量" in title_suffix:
             recent_data = hist.tail(3)
@@ -548,14 +548,13 @@ def generate_kline_chart_url(symbol, period="1mo", interval="1d", title_suffix="
             for index, row in recent_data.iterrows():
                 date_str = index.strftime('%m/%d')
                 labels.append(date_str)
-                vol = float(row['Volume']) / 1000.0 # Show in Thousands if large? Or just raw. Let's keep raw.
                 volumes.append(row['Volume'])
                 
-                # Color logic: Close >= Open -> Red (Up), Close < Open -> Green (Down)
+                # Red=Up, Green=Down
                 if row['Close'] >= row['Open']:
-                    colors.append('rgba(235, 78, 61, 0.8)') # Red
+                    colors.append('rgba(235, 78, 61, 0.8)') 
                 else:
-                    colors.append('rgba(39, 186, 70, 0.8)') # Green
+                    colors.append('rgba(39, 186, 70, 0.8)')
 
             chart_config = {
                 "type": "bar",
@@ -578,7 +577,7 @@ def generate_kline_chart_url(symbol, period="1mo", interval="1d", title_suffix="
             version = '2.9.4'
 
         # -----------------------------------------------
-        # Case C: 歷史 K 線 (Candlestick) -> Candlestick Chart
+        # Case C: 歷史 K 線 (Candlestick) -> Candlestick Chart (v3)
         # -----------------------------------------------
         else:
             ohlc_data = []
@@ -588,8 +587,9 @@ def generate_kline_chart_url(symbol, period="1mo", interval="1d", title_suffix="
             for index, row in recent_data.iterrows():
                 date_str = index.strftime('%Y-%m-%d')
                 labels.append(date_str)
-                # 使用簡單的 Candlestick 格式 (需搭配 chartjs-chart-financial)
-                # 這裡改用 o, h, l, c 字典，且不依賴 time scale，而是用 labels
+                # v3 financial plugin structure {x, o, h, l, c}
+                # But with Category scale, 'x' is optional if order matches labels.
+                # Just o,h,l,c is fine.
                 ohlc_data.append({
                     "o": row['Open'],
                     "h": row['High'],
@@ -600,33 +600,39 @@ def generate_kline_chart_url(symbol, period="1mo", interval="1d", title_suffix="
             chart_config = {
                 "type": "candlestick",
                 "data": {
-                    "labels": labels, # Use explicit labels (Category Axis)
+                    "labels": labels, 
                     "datasets": [{
                         "label": f"{symbol}", 
                         "data": ohlc_data,
+                        # Candlestick colors for v3 plugin
+                         "color": {
+                            "up": "#eb4e3d",
+                            "down": "#27ba46",
+                            "unchanged": "#999"
+                        }
                     }]
                 },
                 "options": {
-                     "title": {
-                        "display": True,
-                        "text": f"{symbol} {title_suffix}"
+                    "plugins": {
+                        "title": {
+                            "display": True,
+                            "text": f"{symbol} {title_suffix}"
+                        },
+                        "legend": {"display": False}
                     },
-                     "legend": {"display": False},
-                     "scales": {
-                        "yAxes": [{ # v2/Simple syntax
-                            "scaleLabel": {"display": True, "labelString": "Price"}
-                        }],
-                        "xAxes": [{ 
-                            "offset": True, # Important for candlestick to not cut off
-                            "ticks": {"autoSkip": True, "maxTicksLimit": 10}
-                        }]
+                    "scales": {
+                        "x": {
+                            "type": "category",
+                            "offset": True,
+                            "ticks": {"maxTicksLimit": 6}
+                        },
+                        "y": {
+                            "ticks": {"beginAtZero": False}
+                        }
                     }
                 }
             }
-            # Use v2 key for simple candlestick support without complex plugin config if possible
-            # But QuickChart 'candlestick' usually implies the plugin.
-            # Using version 2 is often safer for simple usages.
-            version = '2' 
+            version = '3' 
 
         # API Call
         url = "https://quickchart.io/chart/create"
