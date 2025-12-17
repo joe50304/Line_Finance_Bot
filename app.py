@@ -205,10 +205,21 @@ def handle_message(event):
         if is_mentioned:
             # 取得發送者 User ID
             user_id = event.source.user_id
-            # 取得使用者個人資料
-            profile = line_bot_api.get_profile(user_id)
-            user_name = profile.display_name
             
+            try:
+                # 判斷來源類型以使用正確的 API
+                if event.source.type == 'group':
+                    profile = line_bot_api.get_group_member_profile(event.source.group_id, user_id)
+                elif event.source.type == 'room':
+                    profile = line_bot_api.get_room_member_profile(event.source.room_id, user_id)
+                else:
+                    profile = line_bot_api.get_profile(user_id)
+                
+                user_name = profile.display_name
+            except:
+                # 無法取得個人資料時的預設名稱
+                user_name = "朋友"
+
             # 取得問候語
             greeting = get_greeting()
             
