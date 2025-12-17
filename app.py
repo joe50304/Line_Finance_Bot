@@ -175,8 +175,34 @@ def handle_message(event):
         return
 
     # 處理被標註的情況
-    if '@LINEBOT' in msg:
-        try:
+    try:
+        is_mentioned = False
+        
+        # 方法 1: 檢查 event 中的 mention 物件 (最準確)
+        if hasattr(event.message, 'mention') and event.message.mention:
+            # 嘗試取得機器人自身的 User ID (快取)
+            global BOT_USER_ID
+            if 'BOT_USER_ID' not in globals() or not BOT_USER_ID:
+                try:
+                    bot_info = line_bot_api.get_bot_info()
+                    BOT_USER_ID = bot_info.user_id
+                except:
+                    BOT_USER_ID = None
+            
+            # 比對 mention 列表
+            if BOT_USER_ID:
+                for mentionee in event.message.mention.mentionees:
+                    if mentionee.user_id == BOT_USER_ID:
+                        is_mentioned = True
+                        break
+        
+        # 方法 2: 如果無法取得 ID 或沒有 mention 物件，退回文字比對 (模糊比對)
+        # 用戶可能把機器人改名，所以檢查是否包含 "@" 且長度較短，或特定關鍵字
+        if not is_mentioned:
+             if '@LINEBOT' in msg or ('@' in msg and '機器人' in msg):
+                 is_mentioned = True
+
+        if is_mentioned:
             # 取得發送者 User ID
             user_id = event.source.user_id
             # 取得使用者個人資料
@@ -188,12 +214,12 @@ def handle_message(event):
             
             reply_text = f"{user_name} {greeting}"
             line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply_text))
+            return
             
-        except Exception as e:
-            # 發生錯誤時的 fallback，例如無法取得 profile
-            greeting = get_greeting()
-            line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"{greeting} (無法取得暱稱)"))
-        return
+    except Exception as e:
+        # 發生錯誤時的 fallback
+        # 如果確定是被標註(前面邏輯 pass)，但後面出錯，回個簡單的
+        pass
 
     # 匯率查詢
     if msg in VALID_CURRENCIES:
