@@ -487,6 +487,10 @@ def generate_kline_chart_url(symbol, period="1mo", interval="1d", title_suffix="
         stock = yf.Ticker(f"{symbol}.TW")
         hist = stock.history(period=period, interval=interval)
         
+        # 如果當日無資料 (e.g. 尚未開盤或剛開盤)，嘗試抓最近 5 天 (Intraday fallback)
+        if hist.empty and "即時" in title_suffix:
+            hist = stock.history(period="5d", interval=interval)
+            
         if hist.empty:
             return None
 
@@ -494,7 +498,11 @@ def generate_kline_chart_url(symbol, period="1mo", interval="1d", title_suffix="
         # Case A: 即時走勢 (Intraday) -> Line Chart
         # -----------------------------------------------
         if "即時" in title_suffix or interval in ['1m', '2m', '5m', '15m']:
-            # ... (Previous Line Chart Logic) ...
+            # 只取最後一天的資料 (如果是 5d fallback，需過濾)
+            if not hist.empty:
+               last_day = hist.index[-1].date()
+               hist = hist[hist.index.date == last_day]
+
             dates = []
             prices = []
             for index, row in hist.iterrows():
@@ -507,10 +515,11 @@ def generate_kline_chart_url(symbol, period="1mo", interval="1d", title_suffix="
                 "data": {
                     "labels": dates,
                     "datasets": [{
-                        "label": f"{symbol} 即時",
+                        "label": f"{symbol} 即時 ({dates[-1] if dates else ''})",
                         "data": prices,
                         "borderColor": "#eb4e3d",
-                        "fill": False,
+                        "backgroundColor": "rgba(235, 78, 61, 0.1)",
+                        "fill": True,
                         "pointRadius": 0,
                         "borderWidth": 2,
                         "lineTension": 0.1
@@ -518,19 +527,19 @@ def generate_kline_chart_url(symbol, period="1mo", interval="1d", title_suffix="
                 },
                 "options": {
                     "title": {"display": True, "text": f"{symbol} 即時走勢 (Close)"},
+                    "legend": {"display": False},
                     "scales": {
                         "yAxes": [{"ticks": {"beginAtZero": False}}],
-                        "xAxes": [{"ticks": {"autoSkip": True, "maxTicksLimit": 10}}] 
+                        "xAxes": [{"ticks": {"autoSkip": True, "maxTicksLimit": 6}}] 
                     }
                 }
             }
-            version = '2.9.4' # Line chart works fine on v2
+            version = '2.9.4' 
 
         # -----------------------------------------------
         # Case B: 三日交易量 (Volume) -> Bar Chart
         # -----------------------------------------------
         elif "交易量" in title_suffix:
-            # 取最近 3 天
             recent_data = hist.tail(3)
             labels = []
             volumes = []
@@ -539,16 +548,14 @@ def generate_kline_chart_url(symbol, period="1mo", interval="1d", title_suffix="
             for index, row in recent_data.iterrows():
                 date_str = index.strftime('%m/%d')
                 labels.append(date_str)
-                vol = row['Volume']
-                volumes.append(vol)
-                # Color based on price change (approx)
-                # Simple logic: positive close-open usually red, else green.
-                # Just fix to Gray/Blue for volume to avoid confusion? 
-                # Or use Red/Green (Red=Up).
+                vol = float(row['Volume']) / 1000.0 # Show in Thousands if large? Or just raw. Let's keep raw.
+                volumes.append(row['Volume'])
+                
+                # Color logic: Close >= Open -> Red (Up), Close < Open -> Green (Down)
                 if row['Close'] >= row['Open']:
-                    colors.append('rgba(235, 78, 61, 0.7)') # Red
+                    colors.append('rgba(235, 78, 61, 0.8)') # Red
                 else:
-                    colors.append('rgba(39, 186, 70, 0.7)') # Green
+                    colors.append('rgba(39, 186, 70, 0.8)') # Green
 
             chart_config = {
                 "type": "bar",
@@ -561,7 +568,7 @@ def generate_kline_chart_url(symbol, period="1mo", interval="1d", title_suffix="
                     }]
                 },
                 "options": {
-                    "title": {"display": True, "text": f"{symbol} 近三日成交量"},
+                    "title": {"display": True, "text": f"{symbol} 近三日交易量 (紅漲/綠跌)"},
                     "scales": {
                         "yAxes": [{"ticks": {"beginAtZero": True}}]
                     },
@@ -574,17 +581,16 @@ def generate_kline_chart_url(symbol, period="1mo", interval="1d", title_suffix="
         # Case C: 歷史 K 線 (Candlestick) -> Candlestick Chart
         # -----------------------------------------------
         else:
-            # ... (Previous Candlestick logic) ...
             ohlc_data = []
             recent_data = hist.tail(60)
             labels = []
             
             for index, row in recent_data.iterrows():
-                # 注意: QuickChart v3 plugin 格式可能需要 'x', 'o', 'h', 'l', 'c'
                 date_str = index.strftime('%Y-%m-%d')
                 labels.append(date_str)
+                # 使用簡單的 Candlestick 格式 (需搭配 chartjs-chart-financial)
+                # 這裡改用 o, h, l, c 字典，且不依賴 time scale，而是用 labels
                 ohlc_data.append({
-                    "x": date_str, 
                     "o": row['Open'],
                     "h": row['High'],
                     "l": row['Low'],
@@ -594,34 +600,33 @@ def generate_kline_chart_url(symbol, period="1mo", interval="1d", title_suffix="
             chart_config = {
                 "type": "candlestick",
                 "data": {
-                    "labels": labels, 
+                    "labels": labels, # Use explicit labels (Category Axis)
                     "datasets": [{
-                        "label": f"{symbol}", # Suffix removed to save space
+                        "label": f"{symbol}", 
                         "data": ohlc_data,
-                        # Candlestick colors
-                        "color": {
-                            "up": "#eb4e3d",
-                            "down": "#27ba46",
-                            "unchanged": "#999"
-                        }
                     }]
                 },
                 "options": {
-                     "plugins": {
-                        "title": { # v3 syntax
-                            "display": True,
-                            "text": f"{symbol} {title_suffix}"
-                        },
-                        "legend": {"display": False}
-                     },
+                     "title": {
+                        "display": True,
+                        "text": f"{symbol} {title_suffix}"
+                    },
+                     "legend": {"display": False},
                      "scales": {
-                        "y": { # v3 syntax
-                            "ticks": {"beginAtZero": False} 
-                        }
+                        "yAxes": [{ # v2/Simple syntax
+                            "scaleLabel": {"display": True, "labelString": "Price"}
+                        }],
+                        "xAxes": [{ 
+                            "offset": True, # Important for candlestick to not cut off
+                            "ticks": {"autoSkip": True, "maxTicksLimit": 10}
+                        }]
                     }
                 }
             }
-            version = '3' # Force v3 for better candlestick support
+            # Use v2 key for simple candlestick support without complex plugin config if possible
+            # But QuickChart 'candlestick' usually implies the plugin.
+            # Using version 2 is often safer for simple usages.
+            version = '2' 
 
         # API Call
         url = "https://quickchart.io/chart/create"
@@ -630,7 +635,7 @@ def generate_kline_chart_url(symbol, period="1mo", interval="1d", title_suffix="
             "width": 800,
             "height": 600,
             "backgroundColor": "white",
-            "version": version # Specify version
+            "version": version
         }
         
         headers = {'Content-Type': 'application/json'}
