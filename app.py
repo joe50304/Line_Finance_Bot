@@ -332,10 +332,40 @@ def generate_chart_url(dates, cash_rates, spot_rates, currency_code):
         print(f"Error generating chart URL: {e}")
         return None
 
-@cached(TTLCache(maxsize=100, ttl=300))
+@cached(TTLCache(maxsize=1, ttl=300))
+def get_twse_quotes():
+    """
+    從 TWSE OpenAPI 取得個股每日收盤行情 (含成交量)
+    URL: https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL
+    回傳: dict {code: {TradeVolume, ClosingPrice, ...}}
+    """
+    try:
+        url = "https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL"
+        r = requests.get(url)
+        if r.status_code == 200:
+            data = r.json()
+            quotes = {}
+            for item in data:
+                code = item.get('Code')
+                # TWSE 數字可能有逗號，需處理
+                try:
+                    vol = int(item.get('TradeVolume', '0').replace(',', ''))
+                    price = float(item.get('ClosingPrice', '0').replace(',', ''))
+                    quotes[code] = {
+                        "vol": vol,
+                        "price": price
+                    }
+                except:
+                    pass
+            return quotes
+    except Exception as e:
+        print(f"Error fetching TWSE quotes: {e}")
+    return {}
+
+@cached(TTLCache(maxsize=1, ttl=300))
 def get_twse_stats():
     """
-    從 TWSE OpenAPI 取得個股本益比、殖利率、股價淨值比 (每日更新一次即可)
+    從 TWSE OpenAPI 取得個股本益比、殖利率、股價淨值比
     URL: https://openapi.twse.com.tw/v1/exchangeReport/BWIBBU_ALL
     回傳: dict {code: {Name, PE, DividendYield, PB}}
     """
@@ -435,12 +465,21 @@ def get_stock_info(symbol):
         except:
             pass
             
+        
         # 嘗試從 TWSE API 補充資訊 (僅限上市股票 .TW)
         extra_stats = {}
         if suffix == ".TW":
+             # 1. PE/PB/Yield
              all_stats = get_twse_stats()
              if symbol in all_stats:
                  extra_stats = all_stats[symbol]
+             
+             # 原本嘗試修正成交量 (使用 STOCK_DAY_ALL)
+             # 但發現 STOCK_DAY_ALL 包含鉅額交易 (Block Trade)，與一般用戶習慣的 (整股+零股) 不同
+             # 且 API 鉅額交易資料可能有缺漏，導致無法精確扣除
+             # Yahoo fast_info (31.90M) 比 TWSE Total (33.1M) 或 Calculated (32.2M) 更接近用戶目標 (31.95M)
+             # 故移除 Volume 覆蓋邏輯，回歸 Yahoo 數據。
+
 
         return {
             "symbol": symbol,
