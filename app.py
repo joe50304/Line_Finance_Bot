@@ -388,51 +388,57 @@ def get_twse_stats():
         print(f"Error fetching TWSE stats: {e}")
     return {}
 
+def get_valid_stock_obj(symbol):
+    """
+    Helper: 嘗試取得有效的 stock 物件 (優先 .TW，失敗則 .TWO)
+    回傳: (stock, info, suffix) 或 (None, None, None)
+    """
+    def fetch_data(ticker):
+        try:
+            s = yf.Ticker(ticker)
+            return s, s.fast_info
+        except:
+            return None, None
+
+    # 1. Try .TW
+    suffix = ".TW"
+    stock, info = fetch_data(f"{symbol}{suffix}")
+    
+    is_valid = False
+    try:
+        if info and hasattr(info, 'last_price') and info.last_price is not None:
+            is_valid = True
+    except:
+        is_valid = False
+        
+    if is_valid:
+        return stock, info, suffix
+        
+    # 2. Try .TWO
+    suffix = ".TWO"
+    stock, info = fetch_data(f"{symbol}{suffix}")
+    
+    is_valid = False
+    try:
+        if info and hasattr(info, 'last_price') and info.last_price is not None:
+            is_valid = True
+    except:
+        is_valid = False
+
+    if is_valid:
+        return stock, info, suffix
+        
+    return None, None, None
+
 def get_stock_info(symbol):
     """
     取得台股即時資訊 (Yahoo Finance)
     支援上市 (.TW) 與上櫃 (.TWO) 自動判斷
     """
-    def fetch_data(ticker):
-        try:
-            stock = yf.Ticker(ticker)
-            # fast_info 通常比 info 快且欄位較穩定
-            return stock, stock.fast_info
-        except:
-            return None, None
-
     try:
-        # 1. 先嘗試 .TW (上市)
-        suffix = ".TW"
-        stock, info = fetch_data(f"{symbol}{suffix}")
+        stock, info, suffix = get_valid_stock_obj(symbol)
         
-        # 檢查是否有有效價格 (有時候 ticker 存在但沒有 price)
-        is_valid = False
-        try:
-            if info and hasattr(info, 'last_price') and info.last_price is not None:
-                is_valid = True
-        except:
-            is_valid = False
-        
-        # 2. 如果 .TW 無效，嘗試 .TWO (上櫃)
-        if not is_valid:
-            suffix = ".TWO"
-            stock_two, info_two = fetch_data(f"{symbol}{suffix}")
-            try:
-                if info_two and hasattr(info_two, 'last_price') and info_two.last_price is not None:
-                    stock = stock_two
-                    info = info_two
-                    is_valid = True
-            except:
-                pass
-            
-            if not is_valid:
-                 # 若兩者都失敗，但如果是因為本來就是 1815.TW 失敗導致跑到這，
-                 # 我們可能想保留 .TWO 的 stock 物件看看是否能擠出什麼，
-                 # 但若 .TWO 也 Exception，那真的就沒救了。
-                 pass
-
-        if not is_valid:
+        if stock is None:
             print(f"No valid data found for {symbol} (.TW or .TWO)")
             return None
 
@@ -729,7 +735,12 @@ def generate_kline_chart_url(symbol, period="1mo", interval="1d", title_suffix="
     產生 K 線圖、即時走勢圖或成交量圖 URL (QuickChart)
     """
     try:
-        stock = yf.Ticker(f"{symbol}.TW")
+        # 使用共用邏輯取得正確的 stock 物件 (自動判斷 .TW / .TWO)
+        stock, _, suffix = get_valid_stock_obj(symbol)
+        
+        if stock is None:
+            return None
+            
         hist = stock.history(period=period, interval=interval)
         
         # Intraday Fallback: If "即時" and empty, try 5d to get last valid session
