@@ -332,15 +332,80 @@ def generate_chart_url(dates, cash_rates, spot_rates, currency_code):
         print(f"Error generating chart URL: {e}")
         return None
 
+@cached(TTLCache(maxsize=100, ttl=300))
+def get_twse_stats():
+    """
+    從 TWSE OpenAPI 取得個股本益比、殖利率、股價淨值比 (每日更新一次即可)
+    URL: https://openapi.twse.com.tw/v1/exchangeReport/BWIBBU_ALL
+    回傳: dict {code: {Name, PE, DividendYield, PB}}
+    """
+    try:
+        url = "https://openapi.twse.com.tw/v1/exchangeReport/BWIBBU_ALL"
+        r = requests.get(url)
+        if r.status_code == 200:
+            data = r.json()
+            # 轉成 dict 加速查詢
+            stats = {}
+            for item in data:
+                code = item.get('Code')
+                stats[code] = {
+                    "PE": item.get('PEratio', '-'), # 本益比
+                    "Yield": item.get('DividendYield', '-'), # 殖利率
+                    "PB": item.get('PBratio', '-') # 股價淨值比
+                }
+            return stats
+    except Exception as e:
+        print(f"Error fetching TWSE stats: {e}")
+    return {}
+
 def get_stock_info(symbol):
     """
     取得台股即時資訊 (Yahoo Finance)
+    支援上市 (.TW) 與上櫃 (.TWO) 自動判斷
     """
+    def fetch_data(ticker):
+        try:
+            stock = yf.Ticker(ticker)
+            # fast_info 通常比 info 快且欄位較穩定
+            return stock, stock.fast_info
+        except:
+            return None, None
+
     try:
-        stock = yf.Ticker(f"{symbol}.TW")
-        # fast_info 通常比 info 快且欄位較穩定
-        info = stock.fast_info
+        # 1. 先嘗試 .TW (上市)
+        suffix = ".TW"
+        stock, info = fetch_data(f"{symbol}{suffix}")
         
+        # 檢查是否有有效價格 (有時候 ticker 存在但沒有 price)
+        is_valid = False
+        try:
+            if info and hasattr(info, 'last_price') and info.last_price is not None:
+                is_valid = True
+        except:
+            is_valid = False
+        
+        # 2. 如果 .TW 無效，嘗試 .TWO (上櫃)
+        if not is_valid:
+            suffix = ".TWO"
+            stock_two, info_two = fetch_data(f"{symbol}{suffix}")
+            try:
+                if info_two and hasattr(info_two, 'last_price') and info_two.last_price is not None:
+                    stock = stock_two
+                    info = info_two
+                    is_valid = True
+            except:
+                pass
+            
+            if not is_valid:
+                 # 若兩者都失敗，但如果是因為本來就是 1815.TW 失敗導致跑到這，
+                 # 我們可能想保留 .TWO 的 stock 物件看看是否能擠出什麼，
+                 # 但若 .TWO 也 Exception，那真的就沒救了。
+                 pass
+
+        if not is_valid:
+            print(f"No valid data found for {symbol} (.TW or .TWO)")
+            return None
+
         # 取得基本資料
         current_price = info.last_price
         prev_close = info.previous_close
@@ -358,14 +423,25 @@ def get_stock_info(symbol):
         day_high = info.day_high
         day_low = info.day_low
         
+        avg_price = 0
+        name = symbol
+        
         try:
+            # 嘗試取得詳細資訊 (名稱等)
+            # 注意: 此步驟較慢，若追求速度可考慮省略或非同步
             detailed_info = stock.info
             avg_price = detailed_info.get('fiftyDayAverage', 0)
             name = detailed_info.get('longName', symbol)
         except:
-            avg_price = 0
-            name = symbol
+            pass
             
+        # 嘗試從 TWSE API 補充資訊 (僅限上市股票 .TW)
+        extra_stats = {}
+        if suffix == ".TW":
+             all_stats = get_twse_stats()
+             if symbol in all_stats:
+                 extra_stats = all_stats[symbol]
+
         return {
             "symbol": symbol,
             "name": name,
@@ -377,7 +453,9 @@ def get_stock_info(symbol):
             "volume": volume,
             "high": day_high,
             "low": day_low,
-            "avg_price": avg_price
+            "avg_price": avg_price,
+            "type": "上櫃" if suffix == ".TWO" else "上市",
+            "twse_stats": extra_stats
         }
     except Exception as e:
         print(f"Error fetching stock info: {e}")
@@ -450,6 +528,25 @@ def generate_stock_flex_message(data):
                                     TextComponent(text=f"{data['volume']:,.0f}", align='end', size='sm', flex=2),
                                     TextComponent(text="50日均", color='#aaaaaa', size='sm', flex=1),
                                     TextComponent(text=f"{(data.get('avg_price') or 0):.2f}", align='end', size='sm', flex=2)
+                                ]
+                            ),
+                            # 新增 TWSE 資訊 (如果有)
+                            BoxComponent(
+                                layout='baseline',
+                                contents=[
+                                    TextComponent(text="本益比", color='#aaaaaa', size='sm', flex=1),
+                                    TextComponent(text=f"{data.get('twse_stats', {}).get('PE', '-')}", align='end', size='sm', flex=2),
+                                    TextComponent(text="殖利率", color='#aaaaaa', size='sm', flex=1),
+                                    TextComponent(text=f"{data.get('twse_stats', {}).get('Yield', '-')}%" if data.get('twse_stats', {}).get('Yield', '-') != '-' else '-', align='end', size='sm', flex=2)
+                                ]
+                            ),
+                             BoxComponent(
+                                layout='baseline',
+                                contents=[
+                                    TextComponent(text="股價淨值", color='#aaaaaa', size='sm', flex=1),
+                                    TextComponent(text=f"{data.get('twse_stats', {}).get('PB', '-')}", align='end', size='sm', flex=2),
+                                    TextComponent(text="類型", color='#aaaaaa', size='sm', flex=1),
+                                    TextComponent(text=f"{data.get('type', '上市')}", align='end', size='sm', flex=2)
                                 ]
                             )
                         ]
