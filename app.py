@@ -96,6 +96,8 @@ def get_taiwan_bank_rates(currency_code="HKD"):
                 if cash_selling == '--': continue
 
                 rate = float(cash_selling)
+                if len(bank_name) > 20: continue # 銀行名字太長通常是抓錯了
+                if len(cash_selling) > 10: continue
                 bank_rates.append({
                     "bank": bank_name,
                     "rate": rate,
@@ -448,6 +450,11 @@ def handle_message(event):
     parts = msg.split()
     if len(parts) == 2 and parts[1] == '列表' and parts[0] in VALID_CURRENCIES:
         report = get_taiwan_bank_rates(parts[0])
+        
+        # --- 安全防護：檢查長度 ---
+        if len(report) > 4000: # 留一點緩衝 (LINE 上限 5000)
+            report = report[:4000] + "\n...(內容過長已截斷)"
+            
         line_bot_api.reply_message(event.reply_token, TextSendMessage(text=report))
         return
 
