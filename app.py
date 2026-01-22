@@ -506,6 +506,43 @@ def get_stock_info(symbol):
         print(f"Error fetching stock info: {e}")
         return None
 
+def get_forex_info(currency_code):
+    """
+    使用 yfinance 取得外幣對台幣的即時行情 (用於顯示漲跌顏色)
+    """
+    try:
+        # yfinance 的代號格式通常是 "USDTWD=X"
+        symbol = f"{currency_code}TWD=X"
+        ticker = yf.Ticker(symbol)
+        
+        # 取得即時資訊
+        info = ticker.fast_info
+        
+        # 檢查資料有效性
+        if not hasattr(info, 'last_price') or info.last_price is None:
+            return None
+
+        current_price = info.last_price
+        prev_close = info.previous_close
+        
+        # 計算漲跌
+        change = current_price - prev_close
+        change_percent = (change / prev_close) * 100
+        
+        return {
+            "currency": currency_code,
+            "price": current_price,
+            "change": change,
+            "change_percent": change_percent,
+            "high": info.day_high,
+            "low": info.day_low,
+            "open": info.open,
+            "prev_close": prev_close
+        }
+    except Exception as e:
+        print(f"Forex Info Error: {e}")
+        return None
+
 def generate_stock_flex_message(data):
     """
     產生台股資訊 Flex Message
@@ -628,47 +665,111 @@ def generate_stock_flex_message(data):
         )
     )
 
+def generate_currency_flex_message(forex_data, bank_report_text):
+    """
+    產生專業版匯率 Flex Message (結合 Yahoo 即時行情 + FindRate 最佳銀行)
+    """
+    c_code = forex_data['currency']
+    price = forex_data['price']
+    change = forex_data['change']
+    percent = forex_data['change_percent']
+    
+    # 1. 決定顏色 (紅漲綠跌)
+    if change > 0:
+        color = "#eb4e3d" # 紅
+        sign = "+"
+    elif change < 0:
+        color = "#27ba46" # 綠
+        sign = ""
+    else:
+        color = "#333333" # 黑
+        sign = ""
 
-def generate_currency_flex_message(currency_code, report_text):
-    """
-    產生匯率資訊 Flex Message
-    """
-    # 簡單 parsing: 嘗試從 report_text 抓出第一名的銀行和匯率
-    # report_text 格式: "🏆 USD ... \n... \n🥇 永豐銀行 (10:00): 31.5"
-    best_rate_info = "最佳匯率查詢"
+    # 2. 解析 FindRate 的最佳銀行資料 (從文字報告中提取第一名)
+    # 報告格式範例: "... \n🥇 永豐銀行 (10:00): 31.5 \n🥈 ..."
+    best_bank_info = "查詢中..."
     try:
-        lines = report_text.split('\n')
+        lines = bank_report_text.split('\n')
         for line in lines:
             if "🥇" in line:
-                best_rate_info = line.replace("🥇", "").strip()
+                # 去除獎牌符號，只留文字
+                best_bank_info = line.replace("🥇", "").strip()
                 break
     except:
-        pass
+        best_bank_info = "詳見下方列表"
 
     return FlexSendMessage(
-        alt_text=f"{currency_code} 匯率資訊",
+        alt_text=f"{c_code} 匯率快報",
         contents=BubbleContainer(
             body=BoxComponent(
                 layout='vertical',
                 contents=[
-                    TextComponent(text=f"{currency_code} 匯率資訊", weight='bold', size='xl', color='#1DB446'),
-                    SeparatorComponent(margin='md'),
-                    # 顯示最佳匯率 (Highlight)
-                    TextComponent(text="🔥 最佳現鈔賣出:", size='xs', color='#aaaaaa', margin='md'),
-                    TextComponent(text=best_rate_info, weight='bold', size='lg', color='#eb4e3d', margin='sm'),
-                    SeparatorComponent(margin='md'),
-                    # 顯示完整 Text Report (縮小字體)
-                    TextComponent(text=report_text, size='xxs', color='#555555', margin='md', wrap=True),
+                    # --- 標題區 ---
+                    TextComponent(text=f"{c_code}/TWD 匯率", weight='bold', size='xl', color='#555555'),
+                    TextComponent(text="台灣時間即時行情", size='xxs', color='#aaaaaa'),
+                    
+                    # --- 大字體報價區 (Yahoo Finance) ---
+                    BoxComponent(
+                        layout='baseline',
+                        margin='md',
+                        contents=[
+                            TextComponent(text=f"{price:.4f}", weight='bold', size='3xl', color=color),
+                            TextComponent(text=f"{sign}{change:.4f} ({sign}{percent:.2f}%)", size='xs', color=color, margin='md', flex=0)
+                        ]
+                    ),
+                    
+                    # --- 數據網格區 (開高低收) ---
                     SeparatorComponent(margin='lg'),
-                    # Chart Buttons
-                    TextComponent(text="近期走勢圖:", size='xs', color='#aaaaaa', margin='md'),
+                    BoxComponent(
+                        layout='vertical',
+                        margin='lg',
+                        spacing='sm',
+                        contents=[
+                            BoxComponent(
+                                layout='baseline',
+                                contents=[
+                                    TextComponent(text="開盤", color='#aaaaaa', size='xs', flex=1),
+                                    TextComponent(text=f"{forex_data['open']:.4f}", align='end', size='xs', flex=2),
+                                    TextComponent(text="昨收", color='#aaaaaa', size='xs', flex=1),
+                                    TextComponent(text=f"{forex_data['prev_close']:.4f}", align='end', size='xs', flex=2)
+                                ]
+                            ),
+                            BoxComponent(
+                                layout='baseline',
+                                contents=[
+                                    TextComponent(text="最高", color='#aaaaaa', size='xs', flex=1),
+                                    TextComponent(text=f"{forex_data['high']:.4f}", align='end', size='xs', flex=2),
+                                    TextComponent(text="最低", color='#aaaaaa', size='xs', flex=1),
+                                    TextComponent(text=f"{forex_data['low']:.4f}", align='end', size='xs', flex=2)
+                                ]
+                            )
+                        ]
+                    ),
+                    
+                    SeparatorComponent(margin='lg'),
+                    
+                    # --- 最佳銀行區 (FindRate) ---
+                    TextComponent(text="🇹🇼 台灣最佳現鈔賣出 (銀行):", size='xs', color='#aaaaaa', margin='lg'),
+                    TextComponent(text=best_bank_info, weight='bold', size='md', color='#eb4e3d', margin='sm'),
+                    
+                    # --- 按鈕區 (圖表) ---
+                    SeparatorComponent(margin='lg'),
+                    TextComponent(text="歷史走勢圖:", size='xs', color='#aaaaaa', margin='md'),
                     BoxComponent(
                         layout='horizontal',
                         margin='sm',
                         spacing='sm',
                         contents=[
-                            ButtonComponent(style='primary', height='sm', action=MessageAction(label='1天', text=f'{currency_code} 1D')),
-                            ButtonComponent(style='primary', height='sm', action=MessageAction(label='5天', text=f'{currency_code} 5D'))
+                            ButtonComponent(
+                                style='secondary', 
+                                height='sm', 
+                                action=MessageAction(label='1日走勢', text=f'{c_code} 1D')
+                            ),
+                            ButtonComponent(
+                                style='secondary', 
+                                height='sm', 
+                                action=MessageAction(label='5日走勢', text=f'{c_code} 5D')
+                            )
                         ]
                     ),
                     BoxComponent(
@@ -676,9 +777,23 @@ def generate_currency_flex_message(currency_code, report_text):
                         margin='sm',
                         spacing='sm',
                         contents=[
-                            ButtonComponent(style='secondary', height='sm', action=MessageAction(label='1個月', text=f'{currency_code} 1M')),
-                            ButtonComponent(style='secondary', height='sm', action=MessageAction(label='1年', text=f'{currency_code} 1Y'))
+                            ButtonComponent(
+                                style='secondary', 
+                                height='sm', 
+                                action=MessageAction(label='1月K線', text=f'{c_code} 1M')
+                            ),
+                            ButtonComponent(
+                                style='secondary', 
+                                height='sm', 
+                                action=MessageAction(label='1年K線', text=f'{c_code} 1Y')
+                            )
                         ]
+                    ),
+                    # 底部連結：顯示完整排行榜
+                    ButtonComponent(
+                        style='link',
+                        height='sm',
+                        action=MessageAction(label='查看完整銀行比價', text=f'{c_code} 列表')
                     )
                 ]
             )
@@ -1168,11 +1283,30 @@ def handle_message(event):
         return
 
     # 匯率查詢 (Flex Message Dashboard)
+# 匯率查詢 (Flex Message Dashboard) - 升級版
     if msg in VALID_CURRENCIES:
-        report = get_taiwan_bank_rates(msg)
-        # 改用 Flex Message 回傳
-        flex_msg = generate_currency_flex_message(msg, report)
-        line_bot_api.reply_message(event.reply_token, flex_msg)
+        # 1. 抓取 Yahoo 即時行情 (為了漂亮的顏色和數據)
+        forex_data = get_forex_info(msg)
+        
+        # 2. 抓取 FindRate 銀行匯率 (為了知道去哪裡換錢)
+        bank_report = get_taiwan_bank_rates(msg)
+        
+        if forex_data:
+            # 如果抓得到 Yahoo 資料，就顯示漂亮的 Flex Message
+            flex_msg = generate_currency_flex_message(forex_data, bank_report)
+            line_bot_api.reply_message(event.reply_token, flex_msg)
+        else:
+            # 如果 Yahoo 掛了，回退到原本的純文字模式
+            line_bot_api.reply_message(event.reply_token, TextSendMessage(text=bank_report))
+        return
+
+    # --- 額外處理：查看完整列表 ---
+    # 因為我們在 Flex Message 下方加了一個 "查看完整銀行比價" 按鈕，指令是 "{幣別} 列表"
+    # 判斷是否為 "USD 列表" 這種格式
+    parts = msg.split()
+    if len(parts) == 2 and parts[1] == '列表' and parts[0] in VALID_CURRENCIES:
+        report = get_taiwan_bank_rates(parts[0])
+        line_bot_api.reply_message(event.reply_token, TextSendMessage(text=report))
         return
 
     # 匯率走勢圖指令 (新版: 1D, 5D, 1M, 1Y)
