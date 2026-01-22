@@ -628,6 +628,138 @@ def generate_stock_flex_message(data):
         )
     )
 
+
+def generate_currency_flex_message(currency_code, report_text):
+    """
+    產生匯率資訊 Flex Message
+    """
+    # 簡單 parsing: 嘗試從 report_text 抓出第一名的銀行和匯率
+    # report_text 格式: "🏆 USD ... \n... \n🥇 永豐銀行 (10:00): 31.5"
+    best_rate_info = "最佳匯率查詢"
+    try:
+        lines = report_text.split('\n')
+        for line in lines:
+            if "🥇" in line:
+                best_rate_info = line.replace("🥇", "").strip()
+                break
+    except:
+        pass
+
+    return FlexSendMessage(
+        alt_text=f"{currency_code} 匯率資訊",
+        contents=BubbleContainer(
+            body=BoxComponent(
+                layout='vertical',
+                contents=[
+                    TextComponent(text=f"{currency_code} 匯率資訊", weight='bold', size='xl', color='#1DB446'),
+                    SeparatorComponent(margin='md'),
+                    # 顯示最佳匯率 (Highlight)
+                    TextComponent(text="🔥 最佳現鈔賣出:", size='xs', color='#aaaaaa', margin='md'),
+                    TextComponent(text=best_rate_info, weight='bold', size='lg', color='#eb4e3d', margin='sm'),
+                    SeparatorComponent(margin='md'),
+                    # 顯示完整 Text Report (縮小字體)
+                    TextComponent(text=report_text, size='xxs', color='#555555', margin='md', wrap=True),
+                    SeparatorComponent(margin='lg'),
+                    # Chart Buttons
+                    TextComponent(text="近期走勢圖:", size='xs', color='#aaaaaa', margin='md'),
+                    BoxComponent(
+                        layout='horizontal',
+                        margin='sm',
+                        spacing='sm',
+                        contents=[
+                            ButtonComponent(style='primary', height='sm', action=MessageAction(label='1天', text=f'{currency_code} 1D')),
+                            ButtonComponent(style='primary', height='sm', action=MessageAction(label='5天', text=f'{currency_code} 5D'))
+                        ]
+                    ),
+                    BoxComponent(
+                        layout='horizontal',
+                        margin='sm',
+                        spacing='sm',
+                        contents=[
+                            ButtonComponent(style='secondary', height='sm', action=MessageAction(label='1個月', text=f'{currency_code} 1M')),
+                            ButtonComponent(style='secondary', height='sm', action=MessageAction(label='1年', text=f'{currency_code} 1Y'))
+                        ]
+                    )
+                ]
+            )
+        )
+    )
+
+def generate_forex_chart_url_yf(currency_code, period="1d", interval="15m"):
+    """
+    使用 yfinance 產生匯率走勢圖 (Line Chart)
+    """
+    try:
+        # Ticker format: USD -> USDTWD=X
+        symbol = f"{currency_code}TWD=X"
+        data = yf.Ticker(symbol).history(period=period, interval=interval)
+        
+        if data.empty:
+            return None
+            
+        dates = []
+        prices = []
+        
+        # 格式化日期與數據
+        for index, row in data.iterrows():
+            if period == '1d':
+                dt_str = index.strftime('%H:%M')
+            elif period == '5d':
+                dt_str = index.strftime('%m/%d %H')
+            else:
+                dt_str = index.strftime('%Y-%m-%d')
+                
+            dates.append(dt_str)
+            prices.append(row['Close'])
+
+        # Chart Config (Line)
+        chart_config = {
+            "type": "line",
+            "data": {
+                "labels": dates,
+                "datasets": [{
+                    "label": f"{currency_code}/TWD ({period})",
+                    "data": prices,
+                    "borderColor": "#1DB446", # Greenish for forex
+                    "backgroundColor": "rgba(29, 180, 70, 0.1)",
+                    "fill": True,
+                    "pointRadius": 0,
+                    "borderWidth": 2,
+                    "lineTension": 0.1
+                }]
+            },
+            "options": {
+                "title": {"display": True, "text": f"{currency_code} 匯率走勢 ({period})"},
+                "legend": {"display": False},
+                "scales": {
+                    "yAxes": [{"ticks": {"beginAtZero": False}}],
+                    "xAxes": [{"ticks": {"autoSkip": True, "maxTicksLimit": 6}}] 
+                }
+            }
+        }
+        
+        url = "https://quickchart.io/chart/create"
+        payload = {
+            "chart": chart_config,
+            "width": 800,
+            "height": 600,
+            "backgroundColor": "white",
+            "version": "2.9.4"
+        }
+        
+        headers = {'Content-Type': 'application/json'}
+        response = requests.post(url, json=payload, headers=headers)
+        
+        if response.status_code == 200:
+            return response.json().get('url')
+        else:
+            print(f"QuickChart Forex Error: {response.text}")
+            return None
+            
+    except Exception as e:
+        print(f"Error generating forex chart: {e}")
+        return None
+
 def generate_help_message():
     """
     產生功能選單 Flex Message
@@ -1035,17 +1167,50 @@ def handle_message(event):
         line_bot_api.reply_message(event.reply_token, flex_msg)
         return
 
-    # 匯率查詢
+    # 匯率查詢 (Flex Message Dashboard)
     if msg in VALID_CURRENCIES:
         report = get_taiwan_bank_rates(msg)
-        line_bot_api.reply_message(event.reply_token, TextSendMessage(text=report))
+        # 改用 Flex Message 回傳
+        flex_msg = generate_currency_flex_message(msg, report)
+        line_bot_api.reply_message(event.reply_token, flex_msg)
         return
 
-    # 匯率走勢圖指令
-    # 支援: "USD圖", "USD 走勢", "USD CHART", "美金圖" ... etc
-    # 簡單起見，檢查是否包含 currency code 且 (長度 > 3)
-    # 或者 users natural language: "可以去觀察一段時間的匯率 並畫出折線圖嗎" -> 太複雜，先做 suffix
-    
+    # 匯率走勢圖指令 (新版: 1D, 5D, 1M, 1Y)
+    # 判斷是否為 "{Currency} {Period}" 格式
+    parts = msg.split()
+    if len(parts) == 2:
+        currency = parts[0]
+        cmd = parts[1].upper() # 1D, 5D...
+        
+        if currency in VALID_CURRENCIES:
+            # check periods
+            chart_url = None
+            if cmd == '1D':
+                chart_url = generate_forex_chart_url_yf(currency, period='1d', interval='15m')
+            elif cmd == '5D':
+                chart_url = generate_forex_chart_url_yf(currency, period='5d', interval='60m')
+            elif cmd == '1M':
+                chart_url = generate_forex_chart_url_yf(currency, period='1mo', interval='1d')
+            elif cmd == '1Y':
+                chart_url = generate_forex_chart_url_yf(currency, period='1y', interval='1d')
+            
+            # 舊版指令兼容 (例如: USD圖, USD 走勢) -> Default 1M or old logic
+            elif '圖' in cmd or '走勢' in cmd or 'CHART' in cmd:
+                 # 維持舊版邏輯 或 轉導到 1M/1Y?
+                 # 為了符合 User 期待 "因為訊息欄位關係...", 舊指令可能仍需運作
+                 # 這裡簡單轉導到 1M
+                 chart_url = generate_forex_chart_url_yf(currency, period='1mo', interval='1d')
+
+            if chart_url:
+                line_bot_api.reply_message(event.reply_token, ImageSendMessage(original_content_url=chart_url, preview_image_url=chart_url))
+                return
+            elif cmd in ['1D', '5D', '1M', '1Y']:
+                 # 只有明確指令才報錯
+                 # line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"無法產生 {currency} {cmd} 圖表"))
+                 pass
+
+    # 舊版模糊指令 (USD圖, 日幣走勢) - Single word or suffixed
+    # 如果上面沒攔截到 (例如 "USD圖" 連在一起)
     chart_currency = None
     if '圖' in msg or '走勢' in msg or 'CHART' in msg:
         for cur in VALID_CURRENCIES:
@@ -1054,28 +1219,10 @@ def handle_message(event):
                 break
     
     if chart_currency:
-        try:
-            dates, cash_rates, spot_rates = get_historical_data(chart_currency)
-            if dates and (any(cash_rates) or any(spot_rates)):
-                chart_url = generate_chart_url(dates, cash_rates, spot_rates, chart_currency)
-                if chart_url:
-                    line_bot_api.reply_message(event.reply_token, ImageSendMessage(
-                        original_content_url=chart_url,
-                        preview_image_url=chart_url
-                    ))
-                else:
-                    # 只有非常明確的指令才回報錯誤，避免誤判
-                    # 但目前的觸發條件 ('圖'/'走勢'/'CHART' + 幣別) 其實已經算明確
-                    # 為了符合用戶「篩選」需求，這裡選擇安靜失敗，或是僅記錄 Log
-                    print(f"Failed to generate chart URL for {chart_currency}")
-                    pass
-            else:
-                # 查無資料 -> 安靜
-                print(f"No historical data for {chart_currency}")
-                pass
-        except Exception as e:
-            print(f"Error handling currency chart: {e}")
-            pass
+        # 使用新版 yfinance 製圖 (統一風格)
+        chart_url = generate_forex_chart_url_yf(chart_currency, period='1mo', interval='1d')
+        if chart_url:
+            line_bot_api.reply_message(event.reply_token, ImageSendMessage(original_content_url=chart_url, preview_image_url=chart_url))
         return
 
     # --- 台股指令處理 ---
