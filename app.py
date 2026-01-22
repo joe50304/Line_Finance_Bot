@@ -476,8 +476,88 @@ def generate_stock_flex_message(data):
         )
     )
 
-def generate_kline_chart_url(symbol, period="1d", interval="5m", title_suffix=""):
-    return generate_forex_chart_url_yf(symbol.replace('.TW','').replace('.TWO',''), period, interval) 
+def generate_stock_chart_url_yf(symbol, period="1d", interval="15m"):
+    """
+    產生台股走勢圖 (自動判斷上市/上櫃)
+    """
+    try:
+        # 判斷是上市還是上櫃
+        stock, info, suffix = get_valid_stock_obj(symbol)
+        if not stock: return None
+        
+        full_symbol = symbol + suffix
+        ticker = yf.Ticker(full_symbol)
+        
+        data = ticker.history(period=period, interval=interval)
+        
+        if data.empty: return None
+            
+        dates = []
+        prices = []
+        
+        for index, row in data.iterrows():
+            if period == '1d':
+                dt_str = index.strftime('%H:%M')
+            elif period in ['5d', '1mo']:
+                dt_str = index.strftime('%m/%d')
+            else:
+                dt_str = index.strftime('%Y-%m')
+                
+            dates.append(dt_str)
+            prices.append(row['Close'])
+
+        # 抽樣：避免 URL 過長
+        if len(dates) > 60:
+            step = len(dates) // 60 + 1
+            dates = dates[::step]
+            prices = prices[::step]
+
+        # 顏色：漲紅跌綠 (以最後一筆 vs 第一筆)
+        color = "#eb4e3d" if prices[-1] >= prices[0] else "#27ba46"
+
+        chart_config = {
+            "type": "line",
+            "data": {
+                "labels": dates,
+                "datasets": [{
+                    "label": f"{symbol} ({period})",
+                    "data": prices,
+                    "borderColor": color,
+                    "backgroundColor": f"{color}1A", # Hex AA (opacity 10%)
+                    "fill": True,
+                    "pointRadius": 0,
+                    "borderWidth": 2,
+                    "lineTension": 0.1
+                }]
+            },
+            "options": {
+                "title": {"display": True, "text": f"{symbol} 股價走勢 ({period})"},
+                "legend": {"display": False},
+                "scales": {
+                    "yAxes": [{"ticks": {"beginAtZero": False}}],
+                    "xAxes": [{"ticks": {"autoSkip": True, "maxTicksLimit": 6}}] 
+                }
+            }
+        }
+        
+        url = "https://quickchart.io/chart/create"
+        payload = {
+            "chart": chart_config,
+            "width": 800,
+            "height": 600,
+            "backgroundColor": "white",
+            "version": "2.9.4"
+        }
+        
+        response = requests.post(url, json=payload, headers={'Content-Type': 'application/json'})
+        if response.status_code == 200:
+            return response.json().get('url')
+        else:
+            return None
+            
+    except Exception as e:
+        print(f"Stock Chart Error: {e}")
+        return None
 
 # --- 7. 主要路由 ---
 @app.route("/", methods=['GET'])
@@ -548,7 +628,35 @@ def handle_message(event):
                 line_bot_api.reply_message(event.reply_token, TextSendMessage(text="❌ 暫無該時段走勢數據 (可能為週末或資料源問題)"))
         return
 
-# 4. 台股代號 (限制為 ASCII 純英數字，避免中文誤判)
+
+    # 4. 台股複雜指令 (走勢圖/交易量)
+    # 指令格式: "{股票代號} {指令}"
+    if len(parts) == 2 and parts[0].isdigit():
+        symbol = parts[0]
+        cmd = parts[1]
+        
+        chart_url = None
+        # 對應 Flex Message 按鈕的文案
+        if cmd in ['即時', '即時走勢', '即時走勢圖']:
+            chart_url = generate_stock_chart_url_yf(symbol, '1d', '5m')
+        elif cmd in ['日K', '日線']:
+            chart_url = generate_stock_chart_url_yf(symbol, '1y', '1d') # 日K通常看長一點
+        elif cmd in ['週K', '週線']:
+            chart_url = generate_stock_chart_url_yf(symbol, '2y', '1wk')
+        elif cmd in ['月K', '月線']:
+            chart_url = generate_stock_chart_url_yf(symbol, '5y', '1mo')
+        elif cmd in ['交易量', '近3日交易量']:
+             # 交易量圖表稍微不同，這裡先簡單用日K代替，或者未來擴充 Bar Chart
+             # 暫時先給日 K
+             chart_url = generate_stock_chart_url_yf(symbol, '1mo', '1d')
+
+        if chart_url:
+            line_bot_api.reply_message(event.reply_token, ImageSendMessage(original_content_url=chart_url, preview_image_url=chart_url))
+        else:
+            # 如果是無法識別的指令，或許不回覆，或回覆提示
+            if cmd in ['即時', '日K', '週K', '月K', '交易量']:
+                line_bot_api.reply_message(event.reply_token, TextSendMessage(text="❌ 產生圖表失敗 (可能無資料)"))
+        return
     if msg.isascii() and msg.isalnum() and 4 <= len(msg) <= 6:
         stock = get_stock_info(msg)
         if stock:
