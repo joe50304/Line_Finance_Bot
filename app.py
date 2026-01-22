@@ -309,8 +309,8 @@ def generate_currency_flex_message(forex_data, bank_report_text):
                         margin='sm',
                         spacing='sm',
                         contents=[
-                            ButtonComponent(style='secondary', height='sm', action=MessageAction(label='1月K線', text=f'{c_code} 1M')),
-                            ButtonComponent(style='secondary', height='sm', action=MessageAction(label='1年K線', text=f'{c_code} 1Y'))
+                            ButtonComponent(style='secondary', height='sm', action=MessageAction(label='1月走勢', text=f'{c_code} 1M')),
+                            ButtonComponent(style='secondary', height='sm', action=MessageAction(label='1年走勢', text=f'{c_code} 1Y'))
                         ]
                     ),
                     # 完整列表連結
