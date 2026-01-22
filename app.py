@@ -341,32 +341,136 @@ def get_valid_stock_obj(symbol):
         if i and hasattr(i, 'last_price') and i.last_price: return s, i, suffix
     return None, None, None
 
+
+# 補充: 取得 TWSE 額外資訊 (PE/PB/Yield)
+@cached(TTLCache(maxsize=1, ttl=300))
+def get_twse_stats():
+    try:
+        url = "https://openapi.twse.com.tw/v1/exchangeReport/BWIBBU_ALL"
+        r = requests.get(url)
+        if r.status_code == 200:
+            data = r.json()
+            stats = {}
+            for item in data:
+                code = item.get('Code')
+                stats[code] = {
+                    "PE": item.get('PEratio', '-'), 
+                    "Yield": item.get('DividendYield', '-'),
+                    "PB": item.get('PBratio', '-')
+                }
+            return stats
+    except: pass
+    return {}
+
 def get_stock_info(symbol):
     try:
         stock, info, suffix = get_valid_stock_obj(symbol)
         if not stock: return None
+        
+        # 嘗試取得額外資訊
+        avg_price = 0
+        try:
+            # Note: detailed info might be slow
+            # avg_price = stock.info.get('fiftyDayAverage', 0)
+            pass 
+        except: pass
+
+        extra_stats = {}
+        if suffix == ".TW":
+             all_stats = get_twse_stats()
+             if symbol in all_stats: extra_stats = all_stats[symbol]
+
         return {
-            "symbol": symbol, "name": symbol, 
+            "symbol": symbol, "name": symbol,
             "price": info.last_price, "change": info.last_price - info.previous_close,
             "change_percent": (info.last_price - info.previous_close)/info.previous_close*100,
             "limit_up": info.previous_close*1.1, "limit_down": info.previous_close*0.9,
             "volume": info.last_volume, "high": info.day_high, "low": info.day_low,
-            "type": "上櫃" if suffix == ".TWO" else "上市"
+            "avg_price": avg_price,
+            "type": "上櫃" if suffix == ".TWO" else "上市",
+            "twse_stats": extra_stats
         }
     except: return None
 
 def generate_stock_flex_message(data):
     color = "#eb4e3d" if data['change'] > 0 else "#27ba46" if data['change'] < 0 else "#333333"
+    sign = "+" if data['change'] > 0 else ""
+    
     return FlexSendMessage(
         alt_text=f"{data['symbol']} 股價",
         contents=BubbleContainer(
             body=BoxComponent(
                 layout='vertical',
                 contents=[
-                    TextComponent(text=f"{data['symbol']}", weight='bold', size='xl'),
-                    TextComponent(text=f"{data['price']:.2f}", size='3xl', color=color, weight='bold'),
-                    TextComponent(text=f"{data['change']:.2f} ({data['change_percent']:.2f}%)", color=color, size='sm'),
-                    ButtonComponent(style='primary', action=MessageAction(label='即時走勢圖', text=f"{data['symbol']} 即時"), margin='md')
+                    TextComponent(text=f"{data['name']} ({data['symbol']})", weight='bold', size='xl'),
+                    BoxComponent(
+                        layout='baseline', margin='md',
+                        contents=[
+                            TextComponent(text=f"{data['price']:.2f}", weight='bold', size='3xl', color=color),
+                            TextComponent(text=f"{sign}{data['change']:.2f} ({sign}{data['change_percent']:.2f}%)", size='sm', color=color, margin='md', flex=0)
+                        ]
+                    ),
+                    SeparatorComponent(margin='lg'),
+                    BoxComponent(
+                        layout='vertical', margin='lg', spacing='sm',
+                        contents=[
+                            BoxComponent(
+                                layout='baseline',
+                                contents=[
+                                    TextComponent(text="漲停", color='#aaaaaa', size='sm', flex=1),
+                                    TextComponent(text=f"{data['limit_up']:.2f}", align='end', color='#eb4e3d', size='sm', flex=2),
+                                    TextComponent(text="跌停", color='#aaaaaa', size='sm', flex=1),
+                                    TextComponent(text=f"{data['limit_down']:.2f}", align='end', color='#27ba46', size='sm', flex=2)
+                                ]
+                            ),
+                            BoxComponent(
+                                layout='baseline',
+                                contents=[
+                                    TextComponent(text="最高", color='#aaaaaa', size='sm', flex=1),
+                                    TextComponent(text=f"{data['high']:.2f}", align='end', size='sm', flex=2),
+                                    TextComponent(text="最低", color='#aaaaaa', size='sm', flex=1),
+                                    TextComponent(text=f"{data['low']:.2f}", align='end', size='sm', flex=2)
+                                ]
+                            ),
+                            BoxComponent(
+                                layout='baseline',
+                                contents=[
+                                    TextComponent(text="總量", color='#aaaaaa', size='sm', flex=1),
+                                    TextComponent(text=f"{data['volume']:,.0f}", align='end', size='sm', flex=2),
+                                    TextComponent(text="類型", color='#aaaaaa', size='sm', flex=1),
+                                    TextComponent(text=f"{data['type']}", align='end', size='sm', flex=2)
+                                ]
+                            ),
+                            BoxComponent(
+                                layout='baseline',
+                                contents=[
+                                    TextComponent(text="本益比", color='#aaaaaa', size='sm', flex=1),
+                                    TextComponent(text=f"{data.get('twse_stats', {}).get('PE', '-')}", align='end', size='sm', flex=2),
+                                    TextComponent(text="殖利率", color='#aaaaaa', size='sm', flex=1),
+                                    TextComponent(text=f"{data.get('twse_stats', {}).get('Yield', '-')}%" if data.get('twse_stats', {}).get('Yield', '-') != '-' else '-', align='end', size='sm', flex=2)
+                                ]
+                            )
+                        ]
+                    ),
+                    SeparatorComponent(margin='lg'),
+                    BoxComponent(
+                        layout='vertical', margin='md', spacing='sm',
+                        contents=[
+                            ButtonComponent(
+                                style='primary', height='sm',
+                                action=MessageAction(label='即時走勢圖', text=f"{data['symbol']} 即時")
+                            ),
+                            BoxComponent(
+                                layout='horizontal', spacing='sm',
+                                contents=[
+                                    ButtonComponent(style='secondary', height='sm', action=MessageAction(label='日 K', text=f"{data['symbol']} 日K")),
+                                    ButtonComponent(style='secondary', height='sm', action=MessageAction(label='週 K', text=f"{data['symbol']} 週K")),
+                                    ButtonComponent(style='secondary', height='sm', action=MessageAction(label='月 K', text=f"{data['symbol']} 月K"))
+                                ]
+                            ),
+                            ButtonComponent(style='link', height='sm', action=MessageAction(label='近3日交易量', text=f"{data['symbol']} 交易量"))
+                        ]
+                    )
                 ]
             )
         )
