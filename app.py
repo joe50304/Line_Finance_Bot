@@ -476,9 +476,10 @@ def generate_stock_flex_message(data):
         )
     )
 
-def generate_stock_chart_url_yf(symbol, period="1d", interval="15m"):
+def generate_stock_chart_url_yf(symbol, period="1d", interval="15m", chart_type="line"):
     """
     產生台股走勢圖 (自動判斷上市/上櫃)
+    chart_type: 'line' (折線圖) or 'candlestick' (K線圖)
     """
     try:
         # 判斷是上市還是上櫃
@@ -491,55 +492,105 @@ def generate_stock_chart_url_yf(symbol, period="1d", interval="15m"):
         data = ticker.history(period=period, interval=interval)
         
         if data.empty: return None
+
+        # ----------------------------
+        # 1. 折線圖 (Line Chart) Logic
+        # ----------------------------
+        if chart_type == 'line':
+            dates = []
+            prices = []
             
-        dates = []
-        prices = []
-        
-        for index, row in data.iterrows():
-            if period == '1d':
-                dt_str = index.strftime('%H:%M')
-            elif period in ['5d', '1mo']:
-                dt_str = index.strftime('%m/%d')
-            else:
-                dt_str = index.strftime('%Y-%m')
-                
-            dates.append(dt_str)
-            prices.append(row['Close'])
+            for index, row in data.iterrows():
+                if period == '1d':
+                    dt_str = index.strftime('%H:%M')
+                elif period in ['5d', '1mo']:
+                    dt_str = index.strftime('%m/%d')
+                else:
+                    dt_str = index.strftime('%Y-%m')
+                    
+                dates.append(dt_str)
+                prices.append(row['Close'])
 
-        # 抽樣：避免 URL 過長
-        if len(dates) > 60:
-            step = len(dates) // 60 + 1
-            dates = dates[::step]
-            prices = prices[::step]
+            # 抽樣：避免 URL 過長
+            if len(dates) > 60:
+                step = len(dates) // 60 + 1
+                dates = dates[::step]
+                prices = prices[::step]
 
-        # 顏色：漲紅跌綠 (以最後一筆 vs 第一筆)
-        color = "#eb4e3d" if prices[-1] >= prices[0] else "#27ba46"
-
-        chart_config = {
-            "type": "line",
-            "data": {
-                "labels": dates,
-                "datasets": [{
-                    "label": f"{symbol} ({period})",
-                    "data": prices,
-                    "borderColor": color,
-                    "backgroundColor": f"{color}1A", # Hex AA (opacity 10%)
-                    "fill": True,
-                    "pointRadius": 0,
-                    "borderWidth": 2,
-                    "lineTension": 0.1
-                }]
-            },
-            "options": {
-                "title": {"display": True, "text": f"{symbol} 股價走勢 ({period})"},
-                "legend": {"display": False},
-                "scales": {
-                    "yAxes": [{"ticks": {"beginAtZero": False}}],
-                    "xAxes": [{"ticks": {"autoSkip": True, "maxTicksLimit": 6}}] 
+            color = "#eb4e3d" if prices[-1] >= prices[0] else "#27ba46"
+            
+            chart_config = {
+                "type": "line",
+                "data": {
+                    "labels": dates,
+                    "datasets": [{
+                        "label": f"{symbol} ({period})",
+                        "data": prices,
+                        "borderColor": color,
+                        "backgroundColor": f"{color}1A",
+                        "fill": True,
+                        "pointRadius": 0,
+                        "borderWidth": 2,
+                        "lineTension": 0.1
+                    }]
+                },
+                "options": {
+                    "title": {"display": True, "text": f"{symbol} 股價走勢 ({period})"},
+                    "legend": {"display": False},
+                    "scales": {
+                        "yAxes": [{"ticks": {"beginAtZero": False}}],
+                        "xAxes": [{"ticks": {"autoSkip": True, "maxTicksLimit": 6}}] 
+                    }
                 }
             }
-        }
-        
+
+        # ----------------------------
+        # 2. K線圖 (Candlestick) Logic
+        # ----------------------------
+        else:
+            # 抽樣：QuickChart 對 K 線圖的 Payload 限制較嚴格
+            if len(data) > 60:
+                 step = len(data) // 60 + 1
+                 data = data.iloc[::step]
+
+            ohlc_data = []
+            for index, row in data.iterrows():
+                # Note: timestamps handling for QuickChart candlestick
+                # x value can be milliseconds or string date. String date is safer for display.
+                # However, for Candlestick, usually 't' (timestamp ms) is reliable.
+                ts = int(index.timestamp() * 1000)
+                ohlc_data.append({
+                    "t": ts,
+                    "o": row['Open'],
+                    "h": row['High'],
+                    "l": row['Low'],
+                    "c": row['Close']
+                })
+                
+            chart_config = {
+                "type": "candlestick",
+                "data": {
+                    "datasets": [{
+                        "label": f"{symbol} ({period})",
+                        "data": ohlc_data
+                    }]
+                },
+                "options": {
+                    "title": {"display": True, "text": f"{symbol} K線圖 ({period})"},
+                    "legend": {"display": False},
+                    "scales": {
+                        "xAxes": [{
+                            "type": "time",
+                            "time": {
+                                "unit": "day" if period != '1d' else 'hour'
+                            },
+                             "ticks": {"source": "auto"}
+                        }]
+                    }
+                }
+            }
+
+        # 發送 Request
         url = "https://quickchart.io/chart/create"
         payload = {
             "chart": chart_config,
@@ -638,17 +689,17 @@ def handle_message(event):
         chart_url = None
         # 對應 Flex Message 按鈕的文案
         if cmd in ['即時', '即時走勢', '即時走勢圖']:
-            chart_url = generate_stock_chart_url_yf(symbol, '1d', '5m')
+            chart_url = generate_stock_chart_url_yf(symbol, '1d', '5m', chart_type='line')
         elif cmd in ['日K', '日線']:
-            chart_url = generate_stock_chart_url_yf(symbol, '1y', '1d') # 日K通常看長一點
+            chart_url = generate_stock_chart_url_yf(symbol, '1y', '1d', chart_type='candlestick')
         elif cmd in ['週K', '週線']:
-            chart_url = generate_stock_chart_url_yf(symbol, '2y', '1wk')
+            chart_url = generate_stock_chart_url_yf(symbol, '2y', '1wk', chart_type='candlestick')
         elif cmd in ['月K', '月線']:
-            chart_url = generate_stock_chart_url_yf(symbol, '5y', '1mo')
+            chart_url = generate_stock_chart_url_yf(symbol, '5y', '1mo', chart_type='candlestick')
         elif cmd in ['交易量', '近3日交易量']:
              # 交易量圖表稍微不同，這裡先簡單用日K代替，或者未來擴充 Bar Chart
-             # 暫時先給日 K
-             chart_url = generate_stock_chart_url_yf(symbol, '1mo', '1d')
+             # 暫時先給日 K (Line)
+             chart_url = generate_stock_chart_url_yf(symbol, '1mo', '1d', chart_type='line')
 
         if chart_url:
             line_bot_api.reply_message(event.reply_token, ImageSendMessage(original_content_url=chart_url, preview_image_url=chart_url))
