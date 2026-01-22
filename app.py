@@ -444,8 +444,8 @@ def handle_message(event):
                 line_bot_api.reply_message(event.reply_token, TextSendMessage(text="❌ 暫無該時段走勢數據 (可能為週末或資料源問題)"))
         return
 
-    # 4. 台股代號
-    if msg.isalnum() and 4 <= len(msg) <= 6:
+# 4. 台股代號 (限制為 ASCII 純英數字，避免中文誤判)
+    if msg.isascii() and msg.isalnum() and 4 <= len(msg) <= 6:
         stock = get_stock_info(msg)
         if stock:
             line_bot_api.reply_message(event.reply_token, generate_stock_flex_message(stock))
