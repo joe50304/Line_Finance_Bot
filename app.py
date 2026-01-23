@@ -78,53 +78,48 @@ def get_taiwan_bank_rates(currency_code="HKD"):
         if target_df is None:
             return f"找不到 {currency_code} 的匯率表格，可能該網站未提供。"
 
-        # 準備輸出文字報告
-        result_text = f"🏆 {currency_code} 現鈔賣出匯率前 5 名:\n"
-        result_text += "(⬇️ 數字越低越好 | 更新時間)\n"
-        result_text += "----------------\n"
+        # 0=銀行, 1=現鈔買入, 2=現鈔賣出, 3=即期買入, 4=即期賣出, 5=更新時間
+        # 準備輸出文字報告 (已廢棄 purely text return，改回傳 list 給 Flex Message 用)
+        # 為了相容舊邏輯，我們這裡回傳 dict 列表，如果 caller 是舊的再轉字串 (但我們會更新 caller)
         
         bank_rates = []
         
         for i in range(len(target_df)):
             try:
                 row = target_df.iloc[i]
-                # 欄位對應: 0=銀行名稱, 2=現鈔賣出
                 bank_name = str(row[0]).strip()
-                cash_selling = str(row[2]).strip()
-                update_time = str(row[5]).strip()
-                
-                # 過濾標題與無效資料
-                if bank_name in ["銀行名稱", "銀行", "幣別"]: continue
-                if cash_selling == '--': continue
+                cash_selling = str(row[2]).strip() # 現鈔賣出
+                spot_selling = str(row[4]).strip() # 即期賣出
+                update_time = str(row[6]).strip() if len(row) > 6 else "" # 有時候時間在後面
+                # findrate col 5 matches time usually
+                if not update_time: update_time = str(row[5]).strip()
 
-                # 防呆：如果銀行名稱太長，可能是抓錯資料
+                if bank_name in ["銀行名稱", "銀行", "幣別"]: continue
+                if cash_selling == '--' and spot_selling == '--': continue
                 if len(bank_name) > 20: continue
 
-                rate = float(cash_selling)
+                # 處理數值 (優先排現鈔，若無現鈔排即期)
+                rate_val = 9999.0
+                try: rate_val = float(cash_selling)
+                except: 
+                    try: rate_val = float(spot_selling)
+                    except: pass
+                
                 bank_rates.append({
                     "bank": bank_name,
-                    "rate": rate,
+                    "cash_selling": cash_selling,
+                    "spot_selling": spot_selling,
+                    "rate_sort": rate_val,
                     "time": update_time
                 })
-            except:
-                continue
+            except: continue
 
-        # 排序：由低到高
-        bank_rates.sort(key=lambda x: x['rate'])
+        bank_rates.sort(key=lambda x: x['rate_sort'])
+        return bank_rates[:10] # 回傳前 10 名 list
         
-        top_5_banks = bank_rates[:5]
-
-        if not top_5_banks:
-            return f"雖然有 {currency_code} 頁面，但今日無銀行提供「現鈔」賣出報價。"
-
-        for i, item in enumerate(top_5_banks, 1):
-            if i == 1: icon = "🥇"
-            elif i == 2: icon = "🥈"
-            elif i == 3: icon = "🥉"
-            else: icon = f" {i}."
-            result_text += f"{icon} {item['bank']} ({item['time']}): {item['rate']}\n"
-            
-        return result_text
+    except Exception as e:
+        print(f"Scrape Error: {e}")
+        return []
         
     except Exception as e:
         # 只回傳簡短錯誤，避免塞爆 LINE
@@ -258,15 +253,42 @@ def generate_currency_flex_message(forex_data, bank_report_text):
     elif change < 0: color = "#27ba46"; sign = ""
     else: color = "#333333"; sign = ""
 
-    best_bank_info = "暫無現鈔賣出報價"
-    try:
-        if "🥇" in bank_report_text:
-            for line in bank_report_text.split('\n'):
-                if "🥇" in line:
-                    best_bank_info = line.replace("🥇", "").strip()
-                    break
-    except:
-        pass
+    # Build Top 5 Banks Rows
+    bank_rows = []
+    # Header
+    bank_rows.append(
+        BoxComponent(
+            layout='horizontal',
+            contents=[
+                TextComponent(text="銀行", size='xxs', color='#aaaaaa', flex=3),
+                TextComponent(text="現鈔賣出", size='xxs', color='#aaaaaa', align='end', flex=2),
+                TextComponent(text="即期賣出", size='xxs', color='#aaaaaa', align='end', flex=2)
+            ]
+        )
+    )
+    
+    # Data Rows
+    # bank_report_text is now a LIST of dicts based on our change to get_taiwan_bank_rates
+    # But wait, we need to handle if it's still a string (error message) or list
+    if isinstance(bank_report_text, list):
+        for i, b in enumerate(bank_report_text[:5]): # Top 5
+            row_color = "#333333"
+            if i == 0: row_color = "#eb4e3d" # Top 1 highlight
+            
+            bank_rows.append(
+                BoxComponent(
+                    layout='horizontal', margin='xs',
+                    contents=[
+                        TextComponent(text=b['bank'], size='xs', color=row_color, flex=3, weight='bold' if i==0 else 'regular'),
+                        TextComponent(text=b['cash_selling'], size='xs', color=row_color, align='end', flex=2),
+                        TextComponent(text=b['spot_selling'], size='xs', color='#555555', align='end', flex=2)
+                    ]
+                )
+            )
+    else:
+        # Fallback if error string
+        bank_rows.append(TextComponent(text=str(bank_report_text), size='xs', color='#ff0000'))
+
 
     return FlexSendMessage(
         alt_text=f"{c_code} 匯率快報",
@@ -284,8 +306,11 @@ def generate_currency_flex_message(forex_data, bank_report_text):
                         ]
                     ),
                     SeparatorComponent(margin='lg'),
-                    TextComponent(text="🇹🇼 台灣最佳現鈔賣出 (銀行):", size='xs', color='#aaaaaa', margin='lg'),
-                    TextComponent(text=best_bank_info, weight='bold', size='md', color='#eb4e3d', margin='sm'),
+                    TextComponent(text="🇹🇼 台灣銀行最佳匯率 (Top 5)", size='sm', weight='bold', color='#555555', margin='lg'),
+                    BoxComponent(
+                        layout='vertical', margin='md', spacing='xs',
+                        contents=bank_rows
+                    ),
                     SeparatorComponent(margin='lg'),
                     TextComponent(text="歷史走勢圖:", size='xs', color='#aaaaaa', margin='md'),
                     BoxComponent(
@@ -535,7 +560,7 @@ def generate_stock_chart_url_yf(symbol, period="1d", interval="15m", chart_type=
                     }]
                 },
                 "options": {
-                    "title": {"display": True, "text": f"{symbol} 股價走勢 ({period})"},
+                    "title": {"display": True, "text": f"{symbol} 股價走勢" if period == '1d' else f"{symbol} 股價走勢 ({period})"},
                     "legend": {"display": False},
                     "scales": {
                         "yAxes": [{"ticks": {"beginAtZero": False}}],
@@ -561,10 +586,10 @@ def generate_stock_chart_url_yf(symbol, period="1d", interval="15m", chart_type=
                 ts = int(index.timestamp() * 1000)
                 ohlc_data.append({
                     "t": ts,
-                    "o": row['Open'],
-                    "h": row['High'],
-                    "l": row['Low'],
-                    "c": row['Close']
+                    "o": float(row['Open']),
+                    "h": float(row['High']),
+                    "l": float(row['Low']),
+                    "c": float(row['Close'])
                 })
                 
             chart_config = {
@@ -634,6 +659,26 @@ def push_report():
 def handle_message(event):
     msg = event.message.text.upper().strip()
     
+    # 0. 處理 Mentions (被標記)
+    # 如果訊息包含 "@Bot" 或被 mention 且只打招呼
+    # 這裡簡單判斷：如果有被 mention (event.source.type == user/group/room) 
+    # 但 text message event 比較難直接抓 mention object (需 parsing)
+    # 簡單作法：檢查訊息是否有 "@" 並且包含問候詞，或者是直接對 bot 說話
+    is_greeting = False
+    greetings = ["HI", "HELLO", "你好", "您好", "早安", "午安", "晚安", "嗨"]
+    
+    if "🤖" not in msg: # 避免自己回自己 (無限迴圈防呆)
+         if any(g in msg for g in greetings):
+             is_greeting = True
+    
+    if is_greeting:
+        # 如果是群組，通常需要 @ 才會回，避免吵到人
+        # 這裡假設使用者會 tag bot，LINE 會將 tag 轉為文字
+        # 但既然 user 說 "標記機器人後不會回覆"，可能是因為我們之前只檢查 'ID' 等指令
+        reply_text = f"{get_greeting()}！我是您的金融小幫手 🤖\n輸入 'USD' 查詢匯率\n輸入 '2330' 查詢股價"
+        line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply_text))
+        return
+
     if msg in ['ID', '我的ID']:
         tid = event.source.group_id if event.source.type == 'group' else event.source.user_id
         line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"ID: {tid}"))
@@ -652,15 +697,28 @@ def handle_message(event):
             flex_msg = generate_currency_flex_message(forex_data, bank_report)
             line_bot_api.reply_message(event.reply_token, flex_msg)
         else:
-            line_bot_api.reply_message(event.reply_token, TextSendMessage(text=bank_report))
+             # 如果沒有 forex data，但有 bank report (list or str)
+             if isinstance(bank_report, list):
+                  text_report = f"🏆 {msg} 匯率 (無即時盤)\n----------------\n"
+                  for item in bank_report[:10]:
+                      text_report += f"{item['bank']}: {item['cash_selling']}\n"
+                  line_bot_api.reply_message(event.reply_token, TextSendMessage(text=text_report))
+             else:
+                  line_bot_api.reply_message(event.reply_token, TextSendMessage(text=str(bank_report)))
         return
 
     # 2. 匯率完整列表
     parts = msg.split()
     if len(parts) == 2 and parts[1] == '列表' and parts[0] in VALID_CURRENCIES:
         report = get_taiwan_bank_rates(parts[0])
-        if len(report) > 4000: report = report[:4000] + "\n...(內容過長已截斷)"
-        line_bot_api.reply_message(event.reply_token, TextSendMessage(text=report))
+        if len(report) > 0 and isinstance(report, list):
+             # 將 list 轉為純文字報告
+             text_report = f"🏆 {parts[0]} 匯率總覽\n(銀行 | 現鈔賣出 | 即期賣出)\n----------------\n"
+             for item in report:
+                 text_report += f"{item['bank']}: {item['cash_selling']} | {item['spot_selling']}\n"
+             line_bot_api.reply_message(event.reply_token, TextSendMessage(text=text_report))
+        else:
+             line_bot_api.reply_message(event.reply_token, TextSendMessage(text=str(report) if report else "查無資料"))
         return
 
     # 3. 匯率走勢圖
