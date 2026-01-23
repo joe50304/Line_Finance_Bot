@@ -561,11 +561,21 @@ def generate_stock_flex_message(data):
         )
     )
 
-def generate_stock_chart_url_yf(symbol, period="1d", interval="15m", chart_type="line"):
+def generate_stock_chart_url_yf(symbol, period="1d", interval="15m", chart_type="line", stock_name=None):
     """
     產生台股走勢圖 (自動判斷上市/上櫃)
     chart_type: 'line' (折線圖), 'candlestick' (K線圖), 'bar' (交易量)
+    stock_name: 股票中文名稱 (optional)
     """
+    # 如果沒有提供中文名稱，嘗試取得
+    if not stock_name:
+        stock_name = get_stock_name(symbol)
+        if stock_name == symbol:
+            display_name = symbol
+        else:
+            display_name = f"{symbol} {stock_name}"
+    else:
+        display_name = f"{symbol} {stock_name}"
     try:
         # 判斷是上市還是上櫃
         stock, info, suffix = get_valid_stock_obj(symbol)
@@ -621,7 +631,7 @@ def generate_stock_chart_url_yf(symbol, period="1d", interval="15m", chart_type=
                     }]
                 },
                 "options": {
-                    "title": {"display": True, "text": f"{symbol} 走勢"},
+                    "title": {"display": True, "text": f"{display_name} 走勢"},
                     "legend": {"display": False},
                     "scales": {
                         "yAxes": [{"ticks": {"beginAtZero": False}}],
@@ -677,7 +687,7 @@ def generate_stock_chart_url_yf(symbol, period="1d", interval="15m", chart_type=
                 },
                 "options": {
                     "plugins": {
-                        "title": { "display": True, "text": f"{symbol} K線圖 ({'日K' if 'd' in interval else '週K' if 'wk' in interval else '月K'})" },
+                        "title": { "display": True, "text": f"{display_name} K線圖 ({'日K' if 'd' in interval else '週K' if 'wk' in interval else '月K'})" },
                         "legend": { "display": False }
                     },
                     "scales": {
@@ -730,7 +740,7 @@ def generate_stock_chart_url_yf(symbol, period="1d", interval="15m", chart_type=
                     }]
                 },
                 "options": {
-                    "title": {"display": True, "text": f"{symbol} 交易量 ({period})"},
+                    "title": {"display": True, "text": f"{display_name} 交易量 ({period})"},
                     "legend": {"display": False},
                     "scales": {
                         "yAxes": [{"ticks": {"beginAtZero": True}}],
@@ -937,17 +947,20 @@ def handle_message(event):
         chart_url = None
         # 對應 Flex Message 按鈕的文案
 
+        # 先取得股票名稱
+        stock_name = get_stock_name(symbol)
+        
         if cmd in ['即時', '即時走勢', '即時走勢圖']:
-            chart_url = generate_stock_chart_url_yf(symbol, '1d', '5m', chart_type='line')
+            chart_url = generate_stock_chart_url_yf(symbol, '1d', '5m', chart_type='line', stock_name=stock_name)
         elif cmd in ['日K', '日線']:
-            chart_url = generate_stock_chart_url_yf(symbol, '1y', '1d', chart_type='candlestick')
+            chart_url = generate_stock_chart_url_yf(symbol, '1y', '1d', chart_type='candlestick', stock_name=stock_name)
         elif cmd in ['週K', '週線']:
-            chart_url = generate_stock_chart_url_yf(symbol, '2y', '1wk', chart_type='candlestick')
+            chart_url = generate_stock_chart_url_yf(symbol, '2y', '1wk', chart_type='candlestick', stock_name=stock_name)
         elif cmd in ['月K', '月線']:
-            chart_url = generate_stock_chart_url_yf(symbol, '5y', '1mo', chart_type='candlestick')
+            chart_url = generate_stock_chart_url_yf(symbol, '5y', '1mo', chart_type='candlestick', stock_name=stock_name)
         elif cmd in ['交易量', '近3日交易量']:
              # 交易量: 使用 Bar Chart, 週期1個月 (看近期量能變化)
-             chart_url = generate_stock_chart_url_yf(symbol, '1mo', '1d', chart_type='bar')
+             chart_url = generate_stock_chart_url_yf(symbol, '1mo', '1d', chart_type='bar', stock_name=stock_name)
 
         if chart_url:
             line_bot_api.reply_message(event.reply_token, ImageSendMessage(original_content_url=chart_url, preview_image_url=chart_url))
