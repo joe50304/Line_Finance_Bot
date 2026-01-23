@@ -730,26 +730,55 @@ def handle_message(event):
     msg = event.message.text.upper().strip()
     
     # 0. 處理 Mentions (被標記) & 關鍵字問候
-    # 把它移到最前面，並且放寬判斷標準
     is_greeting = False
     greetings = ["HI", "HELLO", "你好", "您好", "早安", "午安", "晚安", "嗨", "TEST", "測試"]
     msg_upper = msg.upper()
     
-    # 只要訊息中有問候語，且 (長度很短 OR 有被 Tag) 就回覆
-    # 注意: Line 文字中 Tag 會變成 "@Name " (有空格)
-    # 只要訊息中有問候語，且 (長度很短 OR 有被 Tag) 就回覆
-    # 或者: 使用者單純 Tag 機器人 (msg contains "@") 且訊息很短，也回覆
+    # 判斷是否「真正」標記到了機器人
+    is_mentioned_bot = False
+    
+    # 方法 A: 檢查 event 中的 mention 物件 (最準確)
+    if hasattr(event.message, 'mention') and event.message.mention:
+        # 嘗試取得機器人自身的 User ID (快取)
+        global BOT_USER_ID
+        if 'BOT_USER_ID' not in globals() or not BOT_USER_ID:
+            try:
+                bot_info = line_bot_api.get_bot_info()
+                BOT_USER_ID = bot_info.user_id
+            except:
+                BOT_USER_ID = None
+        
+        # 比對 mention 列表
+        if BOT_USER_ID:
+            for mentionee in event.message.mention.mentionees:
+                if mentionee.user_id == BOT_USER_ID:
+                    is_mentioned_bot = True
+                    break
+    
+    # 方法 B: 備用方案 (如果 API 無法取得 ID) -> 檢查是否包含 "🤖" 或特定 Bot 關鍵字
+    # 但為了避免亂回，這裡設嚴格一點: 必須有 mention 物件且對應到 Bot ID 最好
+    # 或者是使用者在一對一聊天室 (source.type == user)，那每一句都可以當作對 bot 說
+    
+    is_private_chat = (event.source.type == 'user')
     
     has_greeting_word = any(g in msg_upper for g in greetings)
-    has_tag = "@" in msg or "BOT" in msg_upper
     
-    if has_greeting_word:
-         if len(msg) < 15 or has_tag:
-             is_greeting = True
-    elif has_tag:
-         # 沒有問候語，但有 Tag，且內容很短 (例如: "@FinancialBot")
-         if len(msg) < 20:
-             is_greeting = True
+    # 判定邏輯:
+    # 1. 有標記機器人 (無論有無問候語) -> 回覆問候
+    # 2. 一對一聊天 且 有問候語 -> 回覆問候
+    # 3. 群組內 未標記但有問候語 -> **不回覆** (避免打擾)
+    
+    if is_mentioned_bot:
+        is_greeting = True
+    elif is_private_chat and has_greeting_word:
+        is_greeting = True
+    
+    # (Optional) 強制檢查 Tag 關鍵字 ("@BOT", "@FinancialBot") 作為最後防線
+    # 如果 mention object 沒抓到 (e.g. 電腦版 copy paste?), 但文字有 @Bot
+    # User 說 "標記機器人這個帳號才會有問候語"，所以我們主要依賴 is_mentioned_bot
+    if not is_greeting and ("@" in msg and "BOT" in msg_upper): 
+         # 稍微放寬一點點，以防 API 抓不到 Bot ID
+         pass
     
     # 避免自己回自己: 檢查是否包含 "🤖" (我們自己的 emoji) -> 但 user 說沒回，也許不是這個問題
     # 我們改為不檢查 emoji，畢竟 user 也可以打 emoji
