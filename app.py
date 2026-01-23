@@ -399,7 +399,6 @@ def get_twse_stats():
 def get_stock_name(symbol):
     try:
         # 嘗試從 MIS API 取得名稱 (涵蓋上市/上櫃/興櫃)
-        # 興櫃通常用 otc 或 emg，這裡都試試
         targets = [f"tse_{symbol}.tw", f"otc_{symbol}.tw", f"emg_{symbol}.tw"]
         query = "|".join(targets)
         url = f"https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch={query}&json=1&delay=0"
@@ -412,8 +411,20 @@ def get_stock_name(symbol):
             data = r.json()
             if 'msgArray' in data:
                 for item in data['msgArray']:
-                    if item.get('n'): return item.get('n')
-    except: pass
+                    # 確保 item 有 'c' (代碼) 且匹配我們要找的股票
+                    if item.get('c') == symbol and item.get('n'):
+                        name = item.get('n')
+                        print(f"Successfully fetched name for {symbol}: {name}")
+                        return name
+                print(f"No name found in msgArray for {symbol}")
+            else:
+                print(f"No msgArray in response for {symbol}")
+        else:
+            print(f"HTTP {r.status_code} for {symbol}")
+    except Exception as e:
+        print(f"Error getting stock name for {symbol}: {e}")
+    
+    print(f"Falling back to symbol for {symbol}")
     return symbol # Fallback to symbol if failed
 
 def get_stock_info(symbol):
