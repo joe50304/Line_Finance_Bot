@@ -509,7 +509,7 @@ def generate_stock_flex_message(data):
 def generate_stock_chart_url_yf(symbol, period="1d", interval="15m", chart_type="line"):
     """
     產生台股走勢圖 (自動判斷上市/上櫃)
-    chart_type: 'line', 'candlestick', 'bar' (for volume)
+    chart_type: 'line' (折線圖), 'candlestick' (K線圖), 'bar' (交易量)
     """
     try:
         # 判斷是上市還是上櫃
@@ -519,30 +519,30 @@ def generate_stock_chart_url_yf(symbol, period="1d", interval="15m", chart_type=
         full_symbol = symbol + suffix
         ticker = yf.Ticker(full_symbol)
         
-        # Volume 需要 'Volume' column, K-line calls API properly
         data = ticker.history(period=period, interval=interval)
         
         if data.empty: return None
 
+        version = '2.9.4' # default
+
         # ----------------------------
-        # 1. 折線圖 (Line Chart) Logic
+        # 1. 折線圖 (Line Chart) v2
         # ----------------------------
         if chart_type == 'line':
             dates = []
             prices = []
             
+            # Intraday (1d/5d) logic
             for index, row in data.iterrows():
-                if period == '1d':
+                if period == '1d' or interval in ['1m','2m','5m','15m','30m']:
                     dt_str = index.strftime('%H:%M')
-                elif period in ['5d', '1mo']:
-                    dt_str = index.strftime('%m/%d')
                 else:
-                    dt_str = index.strftime('%Y-%m')
+                    dt_str = index.strftime('%m/%d')
                     
                 dates.append(dt_str)
                 prices.append(row['Close'])
 
-            # 抽樣：避免 URL 過長
+            # Sampling
             if len(dates) > 60:
                 step = len(dates) // 60 + 1
                 dates = dates[::step]
@@ -555,7 +555,7 @@ def generate_stock_chart_url_yf(symbol, period="1d", interval="15m", chart_type=
                 "data": {
                     "labels": dates,
                     "datasets": [{
-                        "label": f"{symbol} ({period})",
+                        "label": f"{symbol}",
                         "data": prices,
                         "borderColor": color,
                         "backgroundColor": f"{color}1A",
@@ -566,7 +566,7 @@ def generate_stock_chart_url_yf(symbol, period="1d", interval="15m", chart_type=
                     }]
                 },
                 "options": {
-                    "title": {"display": True, "text": f"{symbol} 股價走勢" if period == '1d' else f"{symbol} 股價走勢 ({period})"},
+                    "title": {"display": True, "text": f"{symbol} 走勢"},
                     "legend": {"display": False},
                     "scales": {
                         "yAxes": [{"ticks": {"beginAtZero": False}}],
@@ -576,89 +576,113 @@ def generate_stock_chart_url_yf(symbol, period="1d", interval="15m", chart_type=
             }
 
         # ----------------------------
-        # 2. K線圖 (Candlestick) Logic
+        # 2. K線圖 (Candlestick) v3
         # ----------------------------
         elif chart_type == 'candlestick':
-            # 抽樣：QuickChart 對 K 線圖的 Payload 限制較嚴格
+            # Use Chart.js v3 for Candlestick (Better support in QuickChart)
+            version = '3'
+            
+            # Limit data points for clean rendering
             if len(data) > 60:
-                 step = len(data) // 60 + 1
-                 data = data.iloc[::step]
+                data = data.tail(60)
 
+            labels = []
             ohlc_data = []
+            
             for index, row in data.iterrows():
-                # Note: timestamps handling for QuickChart candlestick
-                # x value can be milliseconds or string date. String date is safer for display.
-                # However, for Candlestick, usually 't' (timestamp ms) is reliable.
-                ts = int(index.timestamp() * 1000)
+                date_str = index.strftime('%Y-%m-%d')
+                labels.append(date_str)
                 ohlc_data.append({
-                    "t": ts,
+                    "x": date_str,
                     "o": float(row['Open']),
                     "h": float(row['High']),
                     "l": float(row['Low']),
                     "c": float(row['Close'])
                 })
-                
+            
             chart_config = {
                 "type": "candlestick",
                 "data": {
+                    "labels": labels,
                     "datasets": [{
-                        "label": f"{symbol} ({period})",
-                        "data": ohlc_data
+                        "label": f"{symbol}", 
+                        "data": ohlc_data,
+                        # Chart.js v3 financial colors
+                        "color": {
+                            "up": "#eb4e3d",
+                            "down": "#27ba46",
+                            "unchanged": "#999"
+                        },
+                         "borderColor": {
+                            "up": "#eb4e3d",
+                            "down": "#27ba46",
+                            "unchanged": "#999"
+                        }
                     }]
                 },
                 "options": {
-                    "title": {"display": True, "text": f"{symbol} K線圖 ({period})"},
-                    "legend": {"display": False},
+                    "plugins": {
+                        "title": { "display": True, "text": f"{symbol} K線圖 ({period})" },
+                        "legend": { "display": False }
+                    },
                     "scales": {
-                        "xAxes": [{
-                            "type": "time",
-                            "time": {
-                                "unit": "day" if period != '1d' else 'hour'
-                            },
-                             "ticks": {"source": "auto"},
-                             "gridLines": {"display": False}
-                        }],
-                         "yAxes": [{
-                            "gridLines": {"display": True, "color": "#eeeeee"}
-                         }]
+                        "x": {
+                            "type": "category", # important for v3 candlestick with string labels
+                            "offset": True,
+                            "ticks": { "maxTicksLimit": 6 }
+                        },
+                        "y": {
+                            "ticks": { "beginAtZero": False }
+                        }
                     }
                 }
             }
 
         # ----------------------------
-        # 3. 交易量圖 (Volume Bar Chart) Logic
+        # 3. 交易量圖 (Volume Bar Chart) v2 or v3
         # ----------------------------
-        elif chart_type == 'bar': # 用 bar chart 來畫交易量
-             # 抽樣
-            if len(data) > 60:
+        elif chart_type == 'bar':
+             # Let's keep v2 for bar chart as it works reliably
+             version = '2.9.4'
+             
+             if len(data) > 60:
                  step = len(data) // 60 + 1
                  data = data.iloc[::step]
             
-            dates = []
-            volumes = []
-            for index, row in data.iterrows():
-                dt_str = index.strftime('%m/%d')
-                dates.append(dt_str)
-                volumes.append(int(row['Volume']))
+             dates = []
+             volumes = []
+             colors = []
+             
+             for index, row in data.iterrows():
+                 dt_str = index.strftime('%m/%d')
+                 dates.append(dt_str)
+                 volumes.append(int(row['Volume']))
+                 
+                 # color based on price change if possible, or just blue
+                 if row['Close'] >= row['Open']:
+                     colors.append('#eb4e3d')
+                 else:
+                     colors.append('#27ba46')
 
-            chart_config = {
+             chart_config = {
                 "type": "bar",
                 "data": {
                     "labels": dates,
                     "datasets": [{
                         "label": "Volume",
                         "data": volumes,
-                        "backgroundColor": "#36a2eb"
+                        "backgroundColor": colors
                     }]
                 },
                 "options": {
                     "title": {"display": True, "text": f"{symbol} 交易量 ({period})"},
                     "legend": {"display": False},
                     "scales": {
-                        "yAxes": [{"ticks": {"beginAtZero": True}}]
+                        "yAxes": [{"ticks": {"beginAtZero": True}}],
+                        "xAxes": [{"ticks": {"autoSkip": True, "maxTicksLimit": 6}}]
                     }
                 }
-            }
+             }
 
         # 發送 Request
         url = "https://quickchart.io/chart/create"
@@ -667,7 +691,7 @@ def generate_stock_chart_url_yf(symbol, period="1d", interval="15m", chart_type=
             "width": 800,
             "height": 600,
             "backgroundColor": "white",
-            "version": "2.9.4"
+            "version": version
         }
         
         response = requests.post(url, json=payload, headers={'Content-Type': 'application/json'})
@@ -676,7 +700,6 @@ def generate_stock_chart_url_yf(symbol, period="1d", interval="15m", chart_type=
         else:
             print(f"QuickChart Error: {response.text}")
             return None
-
             
     except Exception as e:
         print(f"Stock Chart Error: {e}")
@@ -710,28 +733,55 @@ def handle_message(event):
     # 把它移到最前面，並且放寬判斷標準
     is_greeting = False
     greetings = ["HI", "HELLO", "你好", "您好", "早安", "午安", "晚安", "嗨", "TEST", "測試"]
-    msg_upper = msg.upper() # msg variable is already upper in line 707, but redundancy is fine or just use msg
+    msg_upper = msg.upper()
     
-    # 條件 1: 包含問候關鍵字
-    has_keyword = any(g in msg for g in greetings) # msg is uppercase in line 707, greetings are mixed but mostly fine.
-    # Note: '你好' is not in msg(upper) if msg was chinese? '你好'.upper() is '你好'.
-
-    # Correction: msg is `event.message.text.upper().strip()`
-    # If I type '你好', `msg` is '你好'.
-    # If I type 'Hi', `msg` is 'HI'.
-
-    # 條件 2: 被 Tag 或是提到 Bot
-    is_mentioned = "BOT" in msg or "@" in msg
+    # 只要訊息中有問候語，且 (長度很短 OR 有被 Tag) 就回覆
+    # 注意: Line 文字中 Tag 會變成 "@Name " (有空格)
+    # 只要訊息中有問候語，且 (長度很短 OR 有被 Tag) 就回覆
+    # 或者: 使用者單純 Tag 機器人 (msg contains "@") 且訊息很短，也回覆
     
-    # 邏輯:
-    # 1. 如果有問候語，且 (句子短 OR 被 Tag) -> 回覆
-    # 2. 如果單純被 Tag 且句子很短 (e.g. "@FinancialBot") -> 視為打招呼回覆
+    has_greeting_word = any(g in msg_upper for g in greetings)
+    has_tag = "@" in msg or "BOT" in msg_upper
     
-    if (has_keyword and (len(msg) < 15 or is_mentioned)) or (is_mentioned and len(msg) < 20):
-         is_greeting = True
+    if has_greeting_word:
+         if len(msg) < 15 or has_tag:
+             is_greeting = True
+    elif has_tag:
+         # 沒有問候語，但有 Tag，且內容很短 (例如: "@FinancialBot")
+         if len(msg) < 20:
+             is_greeting = True
+    
+    # 避免自己回自己: 檢查是否包含 "🤖" (我們自己的 emoji) -> 但 user 說沒回，也許不是這個問題
+    # 我們改為不檢查 emoji，畢竟 user 也可以打 emoji
     
     if is_greeting:
-        reply_text = f"{get_greeting()}！我是您的金融小幫手 🤖\n輸入 'USD' 查詢匯率\n輸入 '2330' 查詢股價"
+        # 取得使用者名稱以加上稱號
+        user_id = event.source.user_id
+        user_name = "朋友"
+        try:
+             # 判斷來源類型以使用正確的 API
+             if event.source.type == 'group':
+                 profile = line_bot_api.get_group_member_profile(event.source.group_id, user_id)
+             elif event.source.type == 'room':
+                 profile = line_bot_api.get_room_member_profile(event.source.room_id, user_id)
+             else:
+                 profile = line_bot_api.get_profile(user_id)
+             user_name = profile.display_name
+        except: pass
+
+        # 這裡根據需求：回應時間回傳 早安/午安/晚安 大帥哥
+        # 取得目前的問候語 (get_greeting 回傳的是 "早安 🌞" 等，我們只取前半段文字，或根據 get_greeting 邏輯重組)
+        # 為了更精準控制 "大帥哥" 的位置，我們直接調用 get_greeting() 並稍作修飾
+        
+        greeting_msg = get_greeting() # e.g., "早安 🌞"
+        # 移除 emoji 方便接字 (optional, 但 User 要求 specific format)
+        # User request: "早安/午安/晚安 大帥哥"
+        # 我們把 greeting_msg 的 emoji 拿掉，直接構造
+        base_greeting = greeting_msg.split()[0] if " " in greeting_msg else greeting_msg
+        
+        # 組合回覆
+        reply_text = f"{base_greeting} 大帥哥！\n我是您的金融小幫手 🤖\n輸入 'USD' 查詢匯率\n輸入 '2330' 查詢股價"
+        
         line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply_text))
         return
 
