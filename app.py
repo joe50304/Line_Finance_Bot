@@ -1199,19 +1199,32 @@ def handle_message(event):
             if cmd in ['即時', '日K', '週K', '月K', '交易量']:
                 line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"❌ 產生圖表失敗 ({cmd})"))
         return
-    if msg.isascii() and msg.isalnum() and 4 <= len(msg) <= 6:
-        stock = get_stock_info(msg)
-        if stock:
-            line_bot_api.reply_message(event.reply_token, generate_stock_flex_message(stock))
-        return
-
-    # 5. 美股查詢
-    # 偵測邏輯：純英文字母，1-5 個字元（避免與台股4-6碼數字衝突）
+    
+    # 4. 美股查詢（優先於台股，避免 AAPL 等被誤判為台股）
+    # 偵測邏輯：純英文字母，1-5 個字元
     if msg.isalpha() and msg.isupper() and 1 <= len(msg) <= 5:
+        print(f"[US Stock Query] Attempting to fetch: {msg}")
         us_stock = get_us_stock_info(msg)
         if us_stock:
             line_bot_api.reply_message(event.reply_token, generate_us_stock_flex_message(us_stock))
             return
+        else:
+            print(f"[US Stock Query] No data found for: {msg}")
+    
+    # 5. 台股查詢（數字代號或混合代號，如 00981A）
+    # 偵測邏輯：包含數字的英數字，4-6 字元
+    if msg.isascii() and msg.isalnum() and 4 <= len(msg) <= 6:
+        # 確保至少包含一個數字（避免純英文被當作台股）
+        if any(c.isdigit() for c in msg):
+            print(f"[Taiwan Stock Query] Attempting to fetch: {msg}")
+            stock = get_stock_info(msg)
+            if stock:
+                line_bot_api.reply_message(event.reply_token, generate_stock_flex_message(stock))
+                return
+            else:
+                print(f"[Taiwan Stock Query] No data found for: {msg}")
+
+
 
 
 if __name__ == "__main__":
