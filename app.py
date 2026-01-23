@@ -976,16 +976,48 @@ def callback():
     except InvalidSignatureError: abort(400)
     return 'OK'
 
-@app.route("/push_report", methods=['GET'])
-def push_report():
-    """定時推送 VIX 恐慌指數報告（由外部 cron job 觸發）"""
+@app.route("/push_forex", methods=['GET'])
+def push_forex():
+    """定時推送韓幣匯率（早上 8:00，由外部 cron job 觸發）"""
+    if not TARGET_ID: return "No Target ID", 500
+    try:
+        krw_report = get_taiwan_bank_rates('KRW')
+        message = f"{get_greeting()}！\n\n📊 韓幣匯率報告\n{krw_report}"
+        
+        line_bot_api.push_message(TARGET_ID, TextSendMessage(text=message))
+        return "Forex Report Sent (KRW)", 200
+    except Exception as e:
+        print(f"Error pushing forex report: {e}")
+        return str(e), 500
+
+@app.route("/push_vix", methods=['GET'])
+def push_vix():
+    """定時推送 VIX 恐慌指數（晚上 18:00，由外部 cron job 觸發）"""
     if not TARGET_ID: return "No Target ID", 500
     try:
         vix_report = generate_vix_report()
-        line_bot_api.push_message(TARGET_ID, TextSendMessage(text=vix_report))
+        message = f"{get_greeting()}！\n\n{vix_report}"
+        
+        line_bot_api.push_message(TARGET_ID, TextSendMessage(text=message))
         return "VIX Report Sent", 200
     except Exception as e:
         print(f"Error pushing VIX report: {e}")
+        return str(e), 500
+
+# 保留舊的 /push_report 以便向後相容（同時推送兩者）
+@app.route("/push_report", methods=['GET'])
+def push_report():
+    """定時推送韓幣匯率與 VIX 恐慌指數報告（向後相容）"""
+    if not TARGET_ID: return "No Target ID", 500
+    try:
+        krw_report = get_taiwan_bank_rates('KRW')
+        vix_report = generate_vix_report()
+        full_report = f"{get_greeting()}！\n\n📊 韓幣匯率\n{krw_report}\n\n{vix_report}"
+        
+        line_bot_api.push_message(TARGET_ID, TextSendMessage(text=full_report))
+        return "Report Sent (KRW + VIX)", 200
+    except Exception as e:
+        print(f"Error pushing report: {e}")
         return str(e), 500
 
 @handler.add(MessageEvent, message=TextMessage)
