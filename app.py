@@ -492,6 +492,185 @@ def get_stock_info(symbol):
         print(f"Error getting stock info: {e}")
         return None
 
+# --- 美股功能 ---
+def get_us_stock_info(symbol):
+    """取得美股即時資訊"""
+    try:
+        ticker = yf.Ticker(symbol)
+        info = ticker.info
+        
+        # 取得價格資訊
+        price = info.get('currentPrice') or info.get('regularMarketPrice')
+        prev_close = info.get('previousClose') or info.get('regularMarketPreviousClose')
+        
+        if not price:
+            return None
+            
+        change = price - prev_close if prev_close else 0
+        change_percent = (change / prev_close * 100) if prev_close else 0
+        
+        return {
+            "symbol": symbol,
+            "name": info.get('shortName') or info.get('longName') or symbol,
+            "price": price,
+            "change": change,
+            "change_percent": change_percent,
+            "high": info.get('dayHigh') or info.get('regularMarketDayHigh') or 0,
+            "low": info.get('dayLow') or info.get('regularMarketDayLow') or 0,
+            "volume": info.get('volume') or info.get('regularMarketVolume') or 0,
+            "market_cap": info.get('marketCap', 0),
+            "pe_ratio": info.get('trailingPE', '-'),
+            "week_52_high": info.get('fiftyTwoWeekHigh', '-'),
+            "week_52_low": info.get('fiftyTwoWeekLow', '-')
+        }
+    except Exception as e:
+        print(f"Error getting US stock info for {symbol}: {e}")
+        return None
+
+def generate_us_stock_flex_message(data):
+    """生成美股資訊 Flex Message（美股慣例：紅漲綠跌）"""
+    # 美股顏色：紅漲綠跌
+    color = "#eb4e3d" if data['change'] > 0 else "#27ba46" if data['change'] < 0 else "#333333"
+    sign = "+" if data['change'] > 0 else ""
+    
+    # 格式化市值
+    market_cap = data['market_cap']
+    if market_cap > 1_000_000_000_000:
+        market_cap_str = f"${market_cap/1_000_000_000_000:.2f}T"
+    elif market_cap > 1_000_000_000:
+        market_cap_str = f"${market_cap/1_000_000_000:.2f}B"
+    elif market_cap > 1_000_000:
+        market_cap_str = f"${market_cap/1_000_000:.2f}M"
+    else:
+        market_cap_str = f"${market_cap:,.0f}"
+    
+    return FlexSendMessage(
+        alt_text=f"{data['symbol']} 美股",
+        contents=BubbleContainer(
+            body=BoxComponent(
+                layout='vertical',
+                contents=[
+                    TextComponent(text=f"🇺🇸 {data['name']}", weight='bold', size='lg', wrap=True),
+                    TextComponent(text=data['symbol'], size='sm', color='#999999', margin='xs'),
+                    BoxComponent(
+                        layout='baseline', margin='md',
+                        contents=[
+                            TextComponent(text=f"${data['price']:.2f}", weight='bold', size='3xl', color=color),
+                            TextComponent(text=f"{sign}{data['change']:.2f} ({sign}{data['change_percent']:.2f}%)", 
+                                        size='sm', color=color, margin='md', flex=0)
+                        ]
+                    ),
+                    SeparatorComponent(margin='lg'),
+                    BoxComponent(
+                        layout='vertical', margin='lg', spacing='sm',
+                        contents=[
+                            BoxComponent(
+                                layout='baseline',
+                                contents=[
+                                    TextComponent(text="最高", color='#aaaaaa', size='sm', flex=1),
+                                    TextComponent(text=f"${data['high']:.2f}", align='end', size='sm', flex=2),
+                                    TextComponent(text="最低", color='#aaaaaa', size='sm', flex=1),
+                                    TextComponent(text=f"${data['low']:.2f}", align='end', size='sm', flex=2)
+                                ]
+                            ),
+                            BoxComponent(
+                                layout='baseline',
+                                contents=[
+                                    TextComponent(text="成交量", color='#aaaaaa', size='sm', flex=1),
+                                    TextComponent(text=f"{data['volume']:,}", align='end', size='sm', flex=2),
+                                    TextComponent(text="市值", color='#aaaaaa', size='sm', flex=1),
+                                    TextComponent(text=market_cap_str, align='end', size='sm', flex=2)
+                                ]
+                            ),
+                            BoxComponent(
+                                layout='baseline',
+                                contents=[
+                                    TextComponent(text="P/E", color='#aaaaaa', size='sm', flex=1),
+                                    TextComponent(text=str(data['pe_ratio']) if data['pe_ratio'] != '-' else '-', 
+                                                align='end', size='sm', flex=2),
+                                    TextComponent(text="52週區間", color='#aaaaaa', size='sm', flex=1),
+                                    TextComponent(text=f"${data['week_52_low']:.2f}-${data['week_52_high']:.2f}" 
+                                                if data['week_52_high'] != '-' else '-', 
+                                                align='end', size='xs', flex=2)
+                                ]
+                            )
+                        ]
+                    )
+                ]
+            )
+        )
+    )
+
+# --- VIX 恐慌指數功能 ---
+def get_vix_data(days=5):
+    """取得過去 N 天的 VIX 恐慌指數資料"""
+    try:
+        vix = yf.Ticker("^VIX")
+        # 取得過去 days 天的資料（多抓幾天以防假日）
+        hist = vix.history(period=f"{days+5}d")
+        
+        if hist.empty:
+            return None
+        
+        # 只取最後 N 天
+        hist = hist.tail(days)
+        
+        vix_data = []
+        for index, row in hist.iterrows():
+            vix_data.append({
+                "date": index.strftime('%Y-%m-%d'),
+                "value": row['Close']
+            })
+        
+        return vix_data
+    except Exception as e:
+        print(f"Error getting VIX data: {e}")
+        return None
+
+def generate_vix_report():
+    """生成 VIX 恐慌指數報告"""
+    vix_data = get_vix_data(5)
+    
+    if not vix_data:
+        return "❌ 無法取得 VIX 資料"
+    
+    # 取得最新 VIX 值
+    latest_vix = vix_data[-1]['value']
+    
+    # 判斷市場情緒
+    if latest_vix < 15:
+        sentiment = "😌 市場平靜"
+        sentiment_desc = "投資人情緒穩定"
+    elif latest_vix < 20:
+        sentiment = "📊 正常波動"
+        sentiment_desc = "市場處於正常狀態"
+    elif latest_vix < 30:
+        sentiment = "😰 市場緊張"
+        sentiment_desc = "投資人開始擔憂"
+    else:
+        sentiment = "😱 高度恐慌"
+        sentiment_desc = "市場處於恐慌狀態"
+    
+    # 組合報告
+    report = f"📉 VIX 恐慌指數報告\n"
+    report += f"{'='*25}\n\n"
+    report += f"📅 過去 5 天 VIX 數值：\n\n"
+    
+    for item in vix_data:
+        report += f"{item['date']}: {item['value']:.2f}\n"
+    
+    report += f"\n{'='*25}\n"
+    report += f"目前狀態：{sentiment}\n"
+    report += f"{sentiment_desc}\n\n"
+    report += f"💡 說明：\n"
+    report += f"• VIX < 15: 市場平靜\n"
+    report += f"• VIX 15-20: 正常波動\n"
+    report += f"• VIX 20-30: 市場緊張\n"
+    report += f"• VIX > 30: 高度恐慌"
+    
+    return report
+
+
 def generate_stock_flex_message(data):
     color = "#eb4e3d" if data['change'] > 0 else "#27ba46" if data['change'] < 0 else "#333333"
     sign = "+" if data['change'] > 0 else ""
@@ -799,11 +978,15 @@ def callback():
 
 @app.route("/push_report", methods=['GET'])
 def push_report():
+    """定時推送 VIX 恐慌指數報告（由外部 cron job 觸發）"""
     if not TARGET_ID: return "No Target ID", 500
     try:
-        line_bot_api.push_message(TARGET_ID, TextSendMessage(text=f"{get_greeting()}！\n{get_taiwan_bank_rates('HKD')}"))
-        return "Sent", 200
-    except Exception as e: return str(e), 500
+        vix_report = generate_vix_report()
+        line_bot_api.push_message(TARGET_ID, TextSendMessage(text=vix_report))
+        return "VIX Report Sent", 200
+    except Exception as e:
+        print(f"Error pushing VIX report: {e}")
+        return str(e), 500
 
 @handler.add(MessageEvent, message=TextMessage)
 def handle_message(event):
@@ -989,6 +1172,15 @@ def handle_message(event):
         if stock:
             line_bot_api.reply_message(event.reply_token, generate_stock_flex_message(stock))
         return
+
+    # 5. 美股查詢
+    # 偵測邏輯：純英文字母，1-5 個字元（避免與台股4-6碼數字衝突）
+    if msg.isalpha() and msg.isupper() and 1 <= len(msg) <= 5:
+        us_stock = get_us_stock_info(msg)
+        if us_stock:
+            line_bot_api.reply_message(event.reply_token, generate_us_stock_flex_message(us_stock))
+            return
+
 
 if __name__ == "__main__":
     app.run()
