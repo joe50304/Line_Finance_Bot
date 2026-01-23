@@ -368,7 +368,9 @@ def get_valid_stock_obj(symbol):
         except: return None, None
     for suffix in [".TW", ".TWO"]:
         s, i = fetch(symbol + suffix)
-        if i and hasattr(i, 'last_price') and i.last_price: return s, i, suffix
+        try:
+            if i and hasattr(i, 'last_price') and i.last_price: return s, i, suffix
+        except: continue
     return None, None, None
 
 
@@ -392,6 +394,28 @@ def get_twse_stats():
     except: pass
     return {}
 
+# Helper: 取得股票中文名稱 (MIS API)
+@cached(TTLCache(maxsize=100, ttl=3600))
+def get_stock_name(symbol):
+    try:
+        # 嘗試從 MIS API 取得名稱 (涵蓋上市/上櫃/興櫃)
+        # 興櫃通常用 otc 或 emg，這裡都試試
+        targets = [f"tse_{symbol}.tw", f"otc_{symbol}.tw", f"emg_{symbol}.tw"]
+        query = "|".join(targets)
+        url = f"https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch={query}&json=1&delay=0"
+        
+        # 稍微加個 header 避免被擋
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0'}
+        r = requests.get(url, headers=headers, timeout=5)
+        
+        if r.status_code == 200:
+            data = r.json()
+            if 'msgArray' in data:
+                for item in data['msgArray']:
+                    if item.get('n'): return item.get('n')
+    except: pass
+    return symbol # Fallback to symbol if failed
+
 def get_stock_info(symbol):
     try:
         stock, info, suffix = get_valid_stock_obj(symbol)
@@ -410,17 +434,48 @@ def get_stock_info(symbol):
              all_stats = get_twse_stats()
              if symbol in all_stats: extra_stats = all_stats[symbol]
 
+        # 取得中文名稱
+        stock_name = get_stock_name(symbol)
+        
+        # 如果是 7866 這種 MIS 抓不到的，嘗試特殊名稱 (Hardcode or fallback)
+        # User 說 7866 是 丹立
+        if symbol == '7866' and stock_name == '7866':
+            stock_name = "丹立"
+
+        # Safely get properties
+        price = info.last_price
+        prev_close = info.previous_close
+        
+        # Some emerging stocks might fail on previous_close or other fields
+        if prev_close is None:
+            # Try regular info as fallback? No, fast_info is better.
+            # Just assume 0 change logic or safely handle
+            prev_close = price # fallback to avoid zero division
+
+        change = price - prev_close
+        try:
+             change_percent = (change / prev_close * 100) if prev_close else 0
+        except: change_percent = 0
+            
         return {
-            "symbol": symbol, "name": symbol,
-            "price": info.last_price, "change": info.last_price - info.previous_close,
-            "change_percent": (info.last_price - info.previous_close)/info.previous_close*100,
-            "limit_up": info.previous_close*1.1, "limit_down": info.previous_close*0.9,
-            "volume": info.last_volume, "high": info.day_high, "low": info.day_low,
+            "symbol": symbol, "name": stock_name,
+            "price": price, 
+            "change": change,
+            "change_percent": change_percent,
+            "limit_up": prev_close * 1.1 if prev_close else 0, 
+            "limit_down": prev_close * 0.9 if prev_close else 0,
+            "volume": info.last_volume, 
+            "high": info.day_high, 
+            "low": info.day_low,
             "avg_price": avg_price,
             "type": "上櫃" if suffix == ".TWO" else "上市",
-            "twse_stats": extra_stats
+            "PE": extra_stats.get("PE", "-"),
+            "Yield": extra_stats.get("Yield", "-"),
+            "PB": extra_stats.get("PB", "-")
         }
-    except: return None
+    except Exception as e:
+        print(f"Error getting stock info: {e}")
+        return None
 
 def generate_stock_flex_message(data):
     color = "#eb4e3d" if data['change'] > 0 else "#27ba46" if data['change'] < 0 else "#333333"
