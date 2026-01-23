@@ -14,6 +14,9 @@ from linebot.models import (
     MessageAction, SeparatorComponent
 )
 from cachetools import cached, TTLCache
+import urllib3
+# 抑制 SSL 警告訊息
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 app = Flask(__name__)
 
@@ -405,7 +408,8 @@ def get_stock_name(symbol):
         
         # 稍微加個 header 避免被擋
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0'}
-        r = requests.get(url, headers=headers, timeout=5)
+        # 加入 verify=False 避免某些環境的 SSL 憑證問題
+        r = requests.get(url, headers=headers, timeout=5, verify=False)
         
         if r.status_code == 200:
             data = r.json()
