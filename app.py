@@ -622,7 +622,7 @@ def generate_stock_chart_url_yf(symbol, period="1d", interval="15m", chart_type=
                 },
                 "options": {
                     "plugins": {
-                        "title": { "display": True, "text": f"{symbol} K線圖 ({period})" },
+                        "title": { "display": True, "text": f"{symbol} K線圖 ({'日K' if 'd' in interval else '週K' if 'wk' in interval else '月K'})" },
                         "legend": { "display": False }
                     },
                     "scales": {
@@ -779,8 +779,8 @@ def handle_message(event):
         # 我們把 greeting_msg 的 emoji 拿掉，直接構造
         base_greeting = greeting_msg.split()[0] if " " in greeting_msg else greeting_msg
         
-        # 組合回覆
-        reply_text = f"{base_greeting} 大帥哥！\n我是您的金融小幫手 🤖\n輸入 'USD' 查詢匯率\n輸入 '2330' 查詢股價"
+        # 組合回覆: "{早安} {User} 大帥哥！"
+        reply_text = f"{base_greeting} {user_name} 大帥哥！\n我是您的金融小幫手 🤖\n輸入 'USD' 查詢匯率\n輸入 '2330' 查詢股價"
         
         line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply_text))
         return
