@@ -710,17 +710,25 @@ def handle_message(event):
     # 把它移到最前面，並且放寬判斷標準
     is_greeting = False
     greetings = ["HI", "HELLO", "你好", "您好", "早安", "午安", "晚安", "嗨", "TEST", "測試"]
-    msg_upper = msg.upper()
+    msg_upper = msg.upper() # msg variable is already upper in line 707, but redundancy is fine or just use msg
     
-    # 只要訊息中有問候語，且 (長度很短 OR 有被 Tag) 就回覆
-    # 注意: Line 文字中 Tag 會變成 "@Name " (有空格)
-    if any(g in msg_upper for g in greetings):
-         # 簡單判定：如果句子很短 (< 10 words) 或是包含 "BOT" / "@"
-         if len(msg) < 10 or "BOT" in msg_upper or "@" in msg:
-             is_greeting = True
+    # 條件 1: 包含問候關鍵字
+    has_keyword = any(g in msg for g in greetings) # msg is uppercase in line 707, greetings are mixed but mostly fine.
+    # Note: '你好' is not in msg(upper) if msg was chinese? '你好'.upper() is '你好'.
+
+    # Correction: msg is `event.message.text.upper().strip()`
+    # If I type '你好', `msg` is '你好'.
+    # If I type 'Hi', `msg` is 'HI'.
+
+    # 條件 2: 被 Tag 或是提到 Bot
+    is_mentioned = "BOT" in msg or "@" in msg
     
-    # 避免自己回自己: 檢查是否包含 "🤖" (我們自己的 emoji) -> 但 user 說沒回，也許不是這個問題
-    # 我們改為不檢查 emoji，畢竟 user 也可以打 emoji
+    # 邏輯:
+    # 1. 如果有問候語，且 (句子短 OR 被 Tag) -> 回覆
+    # 2. 如果單純被 Tag 且句子很短 (e.g. "@FinancialBot") -> 視為打招呼回覆
+    
+    if (has_keyword and (len(msg) < 15 or is_mentioned)) or (is_mentioned and len(msg) < 20):
+         is_greeting = True
     
     if is_greeting:
         reply_text = f"{get_greeting()}！我是您的金融小幫手 🤖\n輸入 'USD' 查詢匯率\n輸入 '2330' 查詢股價"
