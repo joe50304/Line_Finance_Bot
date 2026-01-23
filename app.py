@@ -65,13 +65,19 @@ def get_taiwan_bank_rates(currency_code="HKD"):
         html_buffer = io.StringIO(response.text)
         dfs = pd.read_html(html_buffer)
         
-        # 鎖定匯率表格 (通常是 dfs[1])
         target_df = None
-        if len(dfs) >= 2:
-            target_df = dfs[1]
-        else:
+        for df in dfs:
+            # 必須包含 "現鈔賣出" 才是我們要的表格
+            # 轉為 string 來搜尋關鍵字
+            cols_str = str(df.columns)
+            if "現鈔賣出" in cols_str: 
+                 target_df = df
+                 break
+        
+        # Fallback: if not found, check if any table has enough columns and looks like it
+        if target_df is None:
             for df in dfs:
-                if len(df.columns) > 5:
+                if len(df.columns) >= 5 and "銀行" in str(df.columns):
                     target_df = df
                     break
         
@@ -87,12 +93,11 @@ def get_taiwan_bank_rates(currency_code="HKD"):
         for i in range(len(target_df)):
             try:
                 row = target_df.iloc[i]
-                bank_name = str(row[0]).strip()
-                cash_selling = str(row[2]).strip() # 現鈔賣出
-                spot_selling = str(row[4]).strip() # 即期賣出
-                update_time = str(row[6]).strip() if len(row) > 6 else "" # 有時候時間在後面
-                # findrate col 5 matches time usually
-                if not update_time: update_time = str(row[5]).strip()
+                bank_name = str(row.iloc[0]).strip()
+                cash_selling = str(row.iloc[2]).strip() # 現鈔賣出
+                spot_selling = str(row.iloc[4]).strip() # 即期賣出
+                # Col 5 is usually time
+                update_time = str(row.iloc[5]).strip()
 
                 if bank_name in ["銀行名稱", "銀行", "幣別"]: continue
                 if cash_selling == '--' and spot_selling == '--': continue
@@ -504,7 +509,7 @@ def generate_stock_flex_message(data):
 def generate_stock_chart_url_yf(symbol, period="1d", interval="15m", chart_type="line"):
     """
     產生台股走勢圖 (自動判斷上市/上櫃)
-    chart_type: 'line' (折線圖) or 'candlestick' (K線圖)
+    chart_type: 'line', 'candlestick', 'bar' (for volume)
     """
     try:
         # 判斷是上市還是上櫃
@@ -514,6 +519,7 @@ def generate_stock_chart_url_yf(symbol, period="1d", interval="15m", chart_type=
         full_symbol = symbol + suffix
         ticker = yf.Ticker(full_symbol)
         
+        # Volume 需要 'Volume' column, K-line calls API properly
         data = ticker.history(period=period, interval=interval)
         
         if data.empty: return None
@@ -572,7 +578,7 @@ def generate_stock_chart_url_yf(symbol, period="1d", interval="15m", chart_type=
         # ----------------------------
         # 2. K線圖 (Candlestick) Logic
         # ----------------------------
-        else:
+        elif chart_type == 'candlestick':
             # 抽樣：QuickChart 對 K 線圖的 Payload 限制較嚴格
             if len(data) > 60:
                  step = len(data) // 60 + 1
@@ -609,8 +615,47 @@ def generate_stock_chart_url_yf(symbol, period="1d", interval="15m", chart_type=
                             "time": {
                                 "unit": "day" if period != '1d' else 'hour'
                             },
-                             "ticks": {"source": "auto"}
-                        }]
+                             "ticks": {"source": "auto"},
+                             "gridLines": {"display": False}
+                        }],
+                         "yAxes": [{
+                            "gridLines": {"display": True, "color": "#eeeeee"}
+                         }]
+                    }
+                }
+            }
+
+        # ----------------------------
+        # 3. 交易量圖 (Volume Bar Chart) Logic
+        # ----------------------------
+        elif chart_type == 'bar': # 用 bar chart 來畫交易量
+             # 抽樣
+            if len(data) > 60:
+                 step = len(data) // 60 + 1
+                 data = data.iloc[::step]
+            
+            dates = []
+            volumes = []
+            for index, row in data.iterrows():
+                dt_str = index.strftime('%m/%d')
+                dates.append(dt_str)
+                volumes.append(int(row['Volume']))
+
+            chart_config = {
+                "type": "bar",
+                "data": {
+                    "labels": dates,
+                    "datasets": [{
+                        "label": "Volume",
+                        "data": volumes,
+                        "backgroundColor": "#36a2eb"
+                    }]
+                },
+                "options": {
+                    "title": {"display": True, "text": f"{symbol} 交易量 ({period})"},
+                    "legend": {"display": False},
+                    "scales": {
+                        "yAxes": [{"ticks": {"beginAtZero": True}}]
                     }
                 }
             }
@@ -629,7 +674,9 @@ def generate_stock_chart_url_yf(symbol, period="1d", interval="15m", chart_type=
         if response.status_code == 200:
             return response.json().get('url')
         else:
+            print(f"QuickChart Error: {response.text}")
             return None
+
             
     except Exception as e:
         print(f"Stock Chart Error: {e}")
@@ -659,22 +706,23 @@ def push_report():
 def handle_message(event):
     msg = event.message.text.upper().strip()
     
-    # 0. 處理 Mentions (被標記)
-    # 如果訊息包含 "@Bot" 或被 mention 且只打招呼
-    # 這裡簡單判斷：如果有被 mention (event.source.type == user/group/room) 
-    # 但 text message event 比較難直接抓 mention object (需 parsing)
-    # 簡單作法：檢查訊息是否有 "@" 並且包含問候詞，或者是直接對 bot 說話
+    # 0. 處理 Mentions (被標記) & 關鍵字問候
+    # 把它移到最前面，並且放寬判斷標準
     is_greeting = False
-    greetings = ["HI", "HELLO", "你好", "您好", "早安", "午安", "晚安", "嗨"]
+    greetings = ["HI", "HELLO", "你好", "您好", "早安", "午安", "晚安", "嗨", "TEST", "測試"]
+    msg_upper = msg.upper()
     
-    if "🤖" not in msg: # 避免自己回自己 (無限迴圈防呆)
-         if any(g in msg for g in greetings):
+    # 只要訊息中有問候語，且 (長度很短 OR 有被 Tag) 就回覆
+    # 注意: Line 文字中 Tag 會變成 "@Name " (有空格)
+    if any(g in msg_upper for g in greetings):
+         # 簡單判定：如果句子很短 (< 10 words) 或是包含 "BOT" / "@"
+         if len(msg) < 10 or "BOT" in msg_upper or "@" in msg:
              is_greeting = True
     
+    # 避免自己回自己: 檢查是否包含 "🤖" (我們自己的 emoji) -> 但 user 說沒回，也許不是這個問題
+    # 我們改為不檢查 emoji，畢竟 user 也可以打 emoji
+    
     if is_greeting:
-        # 如果是群組，通常需要 @ 才會回，避免吵到人
-        # 這裡假設使用者會 tag bot，LINE 會將 tag 轉為文字
-        # 但既然 user 說 "標記機器人後不會回覆"，可能是因為我們之前只檢查 'ID' 等指令
         reply_text = f"{get_greeting()}！我是您的金融小幫手 🤖\n輸入 'USD' 查詢匯率\n輸入 '2330' 查詢股價"
         line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply_text))
         return
@@ -746,6 +794,7 @@ def handle_message(event):
         
         chart_url = None
         # 對應 Flex Message 按鈕的文案
+
         if cmd in ['即時', '即時走勢', '即時走勢圖']:
             chart_url = generate_stock_chart_url_yf(symbol, '1d', '5m', chart_type='line')
         elif cmd in ['日K', '日線']:
@@ -755,16 +804,15 @@ def handle_message(event):
         elif cmd in ['月K', '月線']:
             chart_url = generate_stock_chart_url_yf(symbol, '5y', '1mo', chart_type='candlestick')
         elif cmd in ['交易量', '近3日交易量']:
-             # 交易量圖表稍微不同，這裡先簡單用日K代替，或者未來擴充 Bar Chart
-             # 暫時先給日 K (Line)
-             chart_url = generate_stock_chart_url_yf(symbol, '1mo', '1d', chart_type='line')
+             # 交易量: 使用 Bar Chart, 週期1個月 (看近期量能變化)
+             chart_url = generate_stock_chart_url_yf(symbol, '1mo', '1d', chart_type='bar')
 
         if chart_url:
             line_bot_api.reply_message(event.reply_token, ImageSendMessage(original_content_url=chart_url, preview_image_url=chart_url))
         else:
-            # 如果是無法識別的指令，或許不回覆，或回覆提示
+            # error handling
             if cmd in ['即時', '日K', '週K', '月K', '交易量']:
-                line_bot_api.reply_message(event.reply_token, TextSendMessage(text="❌ 產生圖表失敗 (可能無資料)"))
+                line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"❌ 產生圖表失敗 ({cmd})"))
         return
     if msg.isascii() and msg.isalnum() and 4 <= len(msg) <= 6:
         stock = get_stock_info(msg)
