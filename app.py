@@ -831,11 +831,11 @@ def generate_dashboard_flex_message(greeting_text, user_name, market_data):
                         contents=[
                             ButtonComponent(
                                 style='secondary', height='sm', 
-                                action=MessageAction(label='匯率列表', text='幣別選單')
+                                action=MessageAction(label='匯率選單', text='匯率選單')
                             ),
                             ButtonComponent(
                                 style='secondary', height='sm', 
-                                action=MessageAction(label='使用說明', text='HELP')
+                                action=MessageAction(label='使用說明', text='使用說明')
                             )
                         ]
                     )
