@@ -342,24 +342,111 @@ def generate_currency_flex_message(forex_data, bank_report_text):
     )
 
 def generate_help_message():
+    """產生整合式功能說明選單"""
     return FlexSendMessage(
         alt_text="功能選單",
         contents=BubbleContainer(
             body=BoxComponent(
                 layout='vertical',
                 contents=[
-                    TextComponent(text="🤖 金融助手", weight='bold', size='xl', color='#1DB446'),
+                    TextComponent(text="🤖 金融助手功能導覽", weight='bold', size='lg', color='#1DB446'),
+                    TextComponent(text="點擊下方按鈕或輸入指令試試看！", size='xs', color='#aaaaaa', margin='xs'),
+                    
                     SeparatorComponent(margin='md'),
+                    
+                    # 1. 外匯專區
+                    TextComponent(text="🌏 外匯查詢", weight='bold', size='sm', color='#555555', margin='md'),
                     BoxComponent(
-                        layout='horizontal', spacing='sm', margin='md',
+                        layout='horizontal', spacing='sm', margin='sm',
                         contents=[
-                            ButtonComponent(style='primary', action=MessageAction(label='🇺🇸 USD', text='USD')),
-                            ButtonComponent(style='primary', action=MessageAction(label='🇯🇵 JPY', text='JPY')),
-                            ButtonComponent(style='primary', action=MessageAction(label='🇭🇰 HKD', text='HKD'))
+                            ButtonComponent(style='secondary', height='sm', action=MessageAction(label='幣別選單', text='幣別選單')),
+                            ButtonComponent(style='secondary', height='sm', action=MessageAction(label='日幣走勢', text='JPY 圖')),
+                            ButtonComponent(style='secondary', height='sm', action=MessageAction(label='美金匯率', text='USD'))
                         ]
                     ),
-                    ButtonComponent(style='link', action=MessageAction(label='查詢 ID', text='ID'))
+                    TextComponent(text="指令: 輸入幣別代碼 (如 USD, EUR)", size='xs', color='#999999', margin='xs', wrap=True),
+
+                    SeparatorComponent(margin='md'),
+
+                    # 2. 台股專區
+                    TextComponent(text="📈 台股資訊", weight='bold', size='sm', color='#555555', margin='md'),
+                    BoxComponent(
+                        layout='horizontal', spacing='sm', margin='sm',
+                        contents=[
+                            ButtonComponent(style='secondary', height='sm', action=MessageAction(label='台積電', text='2330')),
+                            ButtonComponent(style='secondary', height='sm', action=MessageAction(label='台積電 K線', text='2330 日K')),
+                            ButtonComponent(style='secondary', height='sm', action=MessageAction(label='0050', text='0050'))
+                        ]
+                    ),
+                    TextComponent(text="指令: {代號} 或 {代號} {K線/即時/交易量}", size='xs', color='#999999', margin='xs', wrap=True),
+
+                    SeparatorComponent(margin='md'),
+
+                    # 3. 美股專區
+                    TextComponent(text="🇺🇸 美股報價", weight='bold', size='sm', color='#555555', margin='md'),
+                    BoxComponent(
+                        layout='horizontal', spacing='sm', margin='sm',
+                        contents=[
+                            ButtonComponent(style='secondary', height='sm', action=MessageAction(label='蘋果', text='AAPL')),
+                            ButtonComponent(style='secondary', height='sm', action=MessageAction(label='輝達', text='NVDA')),
+                            ButtonComponent(style='secondary', height='sm', action=MessageAction(label='VIX 指數', text='^VIX'))
+                        ]
+                    ),
+                    TextComponent(text="指令: 輸入美股代碼 (如 TSLA, MSFT)", size='xs', color='#999999', margin='xs', wrap=True),
+                    
+                    SeparatorComponent(margin='md'),
+                    
+                    # Footer
+                    ButtonComponent(style='link', height='sm', action=MessageAction(label='查詢 ID', text='ID'), margin='sm')
                 ]
+            )
+        )
+    )
+
+def generate_currency_menu_flex():
+    """產生熱門幣別選擇選單"""
+    # 定義熱門 8 大幣別
+    currencies = [
+        {"code": "USD", "name": "美金"}, {"code": "JPY", "name": "日圓"},
+        {"code": "EUR", "name": "歐元"}, {"code": "CNY", "name": "人民幣"},
+        {"code": "KRW", "name": "韓元"}, {"code": "AUD", "name": "澳幣"},
+        {"code": "GBP", "name": "英鎊"}, {"code": "THB", "name": "泰銖"}
+    ]
+    
+    # Grid Layout: 2 columns x 4 rows
+    rows = []
+    current_row = []
+    
+    for i, curr in enumerate(currencies):
+        btn = ButtonComponent(
+            style='secondary', 
+            height='sm',
+            action=MessageAction(label=f"{curr['name']} ({curr['code']})", text=f"{curr['code']} 列表"), # 直接查列表
+            flex=1
+        )
+        current_row.append(btn)
+        
+        # 每兩個換一行，或是最後一個
+        if len(current_row) == 2 or i == len(currencies) - 1:
+            # 補齊空位 (如果奇數個)
+            if len(current_row) == 1:
+                 current_row.append(FillerComponent())
+            
+            rows.append(BoxComponent(layout='horizontal', spacing='sm', margin='sm', contents=current_row))
+            current_row = []
+
+    return FlexSendMessage(
+        alt_text="請選擇幣別",
+        contents=BubbleContainer(
+            header=BoxComponent(
+                layout='vertical',
+                contents=[
+                    TextComponent(text="🌏 選擇幣別", weight='bold', size='lg', color='#1DB446', align='center')
+                ]
+            ),
+            body=BoxComponent(
+                layout='vertical',
+                contents=rows
             )
         )
     )
@@ -740,9 +827,9 @@ def generate_dashboard_flex_message(greeting_text, user_name, market_data):
                         margin='md',
                         spacing='sm',
                         contents=[
-                             ButtonComponent(
+                            ButtonComponent(
                                 style='secondary', height='sm', 
-                                action=MessageAction(label='匯率列表', text='USD 列表')
+                                action=MessageAction(label='匯率列表', text='幣別選單')
                             ),
                             ButtonComponent(
                                 style='secondary', height='sm', 
@@ -1249,17 +1336,14 @@ def handle_message(event):
         # 取得目前的問候語 (get_greeting 回傳的是 "早安 🌞" 等，我們只取前半段文字，或根據 get_greeting 邏輯重組)
         # 為了更精準控制 "大帥哥" 的位置，我們直接調用 get_greeting() 並稍作修飾
         
-        greeting_msg = get_greeting() # e.g., "早安 🌞"
-        base_greeting = greeting_msg.split()[0] if " " in greeting_msg else greeting_msg
         
         # 1. 取得市場 dashboard 數據
         market_data = get_market_dashboard_data()
         
         # 2. 如果抓不到數據 (全部失敗)，fallback 回純文字，或顯示空數據的卡片
-        # 這裡我們選擇顯示卡片，即使數據是 "-"，體驗較一致
         
-        # 3. 產生 Flex Message
-        reply_flex = generate_dashboard_flex_message(base_greeting, user_name, market_data)
+        # 3. 產生 Flex Message. NOTE: Pass FULL greeting message (with emoji)
+        reply_flex = generate_dashboard_flex_message(greeting_msg, user_name, market_data)
         
         line_bot_api.reply_message(event.reply_token, reply_flex)
         return
@@ -1269,8 +1353,12 @@ def handle_message(event):
         line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"ID: {tid}"))
         return
 
-    if msg in ['HELP', 'MENU', '選單']:
+    if msg in ['HELP', 'MENU', '選單', '使用說明']:
         line_bot_api.reply_message(event.reply_token, generate_help_message())
+        return
+
+    if msg in ['幣別選單', '幣別列表', '匯率選單', '匯率列表']:
+        line_bot_api.reply_message(event.reply_token, generate_currency_menu_flex())
         return
 
     # 1. 匯率查詢 (儀表板)
