@@ -1314,7 +1314,10 @@ def handle_message(event):
     # User 說 "標記機器人這個帳號才會有問候語"，所以我們主要依賴 is_mentioned_bot
     if not is_greeting and ("@" in msg and "BOT" in msg_upper): 
          # 稍微放寬一點點，以防 API 抓不到 Bot ID
-         pass
+         is_greeting = True
+         print(f"Fallback mention detected via text: {msg}")
+
+    print(f"[Debug] Msg: {msg}, IsBotMention: {is_mentioned_bot}, IsPrivate: {is_private_chat}, HasGreeting: {has_greeting_word} -> IsGreeting: {is_greeting}")
     
     # 避免自己回自己: 檢查是否包含 "🤖" (我們自己的 emoji) -> 但 user 說沒回，也許不是這個問題
     # 我們改為不檢查 emoji，畢竟 user 也可以打 emoji
