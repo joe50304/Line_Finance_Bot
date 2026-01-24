@@ -601,7 +601,159 @@ def generate_us_stock_flex_message(data):
         )
     )
 
-# --- VIX 恐慌指數功能 ---
+# --- 市場儀表板 (Dashboard) ---
+def get_market_dashboard_data():
+    """取得市場儀表板數據 (^VIX, ^TWII, 0050.TW, 2330.TW)"""
+    tickers = ["^VIX", "^TWII", "0050.TW", "2330.TW"]
+    
+    # 中文名稱映射
+    name_map = {
+        "^VIX": "VIX 恐慌",
+        "^TWII": "加權指數",
+        "0050.TW": "元大 0050",
+        "2330.TW": "台積電"
+    }
+    
+    results = []
+    
+    try:
+        # 批量下載 (Period='5d' for safety to calculate change)
+        # threads=True 加速下載
+        df = yf.download(tickers, period="5d", interval="1d", group_by='ticker', threads=True)
+        
+        for symbol in tickers:
+            item_data = {
+                "symbol": symbol,
+                "name": name_map.get(symbol, symbol),
+                "price": "-", "change": 0, "change_percent": 0, "color": "#333333", "sign": "",
+                "action_text": symbol.replace(".TW", "") # Remove suffix for command
+            }
+            
+            try:
+                # 處理 DataFrame 結構
+                if len(tickers) > 1:
+                    ticker_df = df[symbol]
+                else:
+                    ticker_df = df
+                
+                # 移除 NaN 並取得最後兩筆資料
+                ticker_df = ticker_df.dropna(subset=['Close'])
+                
+                if not ticker_df.empty:
+                    last_row = ticker_df.iloc[-1]
+                    price = last_row['Close']
+                    
+                    if len(ticker_df) >= 2:
+                        prev_row = ticker_df.iloc[-2]
+                        prev_close = prev_row['Close']
+                        change = price - prev_close
+                        change_percent = (change / prev_close) * 100
+                    else:
+                        change = 0
+                        change_percent = 0
+                    
+                    # 格式化
+                    color = "#eb4e3d" if change > 0 else "#27ba46" if change < 0 else "#333333"
+                    sign = "+" if change > 0 else ""
+                    
+                    item_data.update({
+                        "price": f"{price:,.2f}",
+                        "change": change, # Keep float for logic if needed, currently unused
+                        "change_str": f"{sign}{change:.2f}",
+                        "change_percent": f"{sign}{change_percent:.2f}%",
+                        "color": color
+                    })
+
+                    # 特殊處理: 如果是 VIX，顏色邏輯相反 (越高越恐慌=紅?) 
+                    # 一般習慣: 股市紅漲綠跌。VIX 上漲通常伴隨股市下跌。
+                    # 這裡保持一致性: 數值變大由紅，變小用綠。
+                    
+            except Exception as e:
+                print(f"Error processing {symbol} in dashboard: {e}")
+            
+            results.append(item_data)
+            
+        return results
+
+    except Exception as e:
+        print(f"Error getting market dashboard data: {e}")
+        return []
+
+def generate_dashboard_flex_message(greeting_text, user_name, market_data):
+    """
+    產生市場快況儀表板 Flex Message
+    greeting_text: 問候語 (e.g. "早安 🌞")
+    user_name:使用者名稱 (e.g. "Joe")
+    market_data: get_market_dashboard_data() 的回傳結果 list
+    """
+    
+    # 建立 Dashboard Items (2x2 Grid or List)
+    # 這裡使用 Vertical List of Boxes for clear reading
+    
+    dashboard_rows = []
+    
+    for item in market_data:
+        # Row for each market index
+        row = BoxComponent(
+            layout='baseline',
+            spacing='sm',
+            margin='md',
+            action=MessageAction(label=item['name'], text=item['action_text']), # 點擊觸發查詢
+            contents=[
+               TextComponent(text=item['name'], size='sm', color='#555555', flex=4),
+               TextComponent(text=item['price'], size='sm', weight='bold', align='end', flex=3),
+               TextComponent(text=item['change_percent'], size='xs', color=item['color'], align='end', flex=3)
+            ]
+        )
+        dashboard_rows.append(row)
+        # dashboard_rows.append(SeparatorComponent(margin='sm')) # Optional separator
+
+    return FlexSendMessage(
+        alt_text=f"{greeting_text}！市場快訊",
+        contents=BubbleContainer(
+            size='giga', # Make it wider
+            body=BoxComponent(
+                layout='vertical',
+                contents=[
+                    # Header Section with Greeting
+                    TextComponent(text=f"{greeting_text}", weight='bold', size='xl', color='#1DB446'),
+                    TextComponent(text=f"{user_name} 大帥哥！", weight='bold', size='lg', margin='xs'),
+                    TextComponent(text="我是您的金融小幫手 🤖", size='xs', color='#aaaaaa', margin='xs'),
+                    
+                    SeparatorComponent(margin='md'),
+                    
+                    # Target Market Dashboard Header
+                    TextComponent(text="📊 重點行情", size='sm', weight='bold', color='#999999', margin='md'),
+                    
+                    # Dashboard Rows
+                    BoxComponent(
+                        layout='vertical',
+                        margin='sm',
+                        contents=dashboard_rows
+                    ),
+                    
+                    SeparatorComponent(margin='lg'),
+                    
+                    # Footer Buttons
+                    BoxComponent(
+                        layout='horizontal',
+                        margin='md',
+                        spacing='sm',
+                        contents=[
+                             ButtonComponent(
+                                style='secondary', height='sm', 
+                                action=MessageAction(label='匯率列表', text='USD 列表')
+                            ),
+                            ButtonComponent(
+                                style='secondary', height='sm', 
+                                action=MessageAction(label='使用說明', text='HELP')
+                            )
+                        ]
+                    )
+                ]
+            )
+        )
+    )
 def get_vix_data(days=5):
     """取得過去 N 天的 VIX 恐慌指數資料"""
     try:
@@ -1098,15 +1250,18 @@ def handle_message(event):
         # 為了更精準控制 "大帥哥" 的位置，我們直接調用 get_greeting() 並稍作修飾
         
         greeting_msg = get_greeting() # e.g., "早安 🌞"
-        # 移除 emoji 方便接字 (optional, 但 User 要求 specific format)
-        # User request: "早安/午安/晚安 大帥哥"
-        # 我們把 greeting_msg 的 emoji 拿掉，直接構造
         base_greeting = greeting_msg.split()[0] if " " in greeting_msg else greeting_msg
         
-        # 組合回覆: "{早安} {User} 大帥哥！"
-        reply_text = f"{base_greeting} {user_name} 大帥哥！\n我是您的金融小幫手 🤖\n輸入 'USD' 查詢匯率\n輸入 '2330' 查詢股價"
+        # 1. 取得市場 dashboard 數據
+        market_data = get_market_dashboard_data()
         
-        line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply_text))
+        # 2. 如果抓不到數據 (全部失敗)，fallback 回純文字，或顯示空數據的卡片
+        # 這裡我們選擇顯示卡片，即使數據是 "-"，體驗較一致
+        
+        # 3. 產生 Flex Message
+        reply_flex = generate_dashboard_flex_message(base_greeting, user_name, market_data)
+        
+        line_bot_api.reply_message(event.reply_token, reply_flex)
         return
 
     if msg in ['ID', '我的ID']:
