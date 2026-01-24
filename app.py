@@ -1452,8 +1452,11 @@ def handle_message(event):
         return
     
     # 4. 美股查詢（優先於台股，避免 AAPL 等被誤判為台股）
-    # 偵測邏輯：純英文字母，1-5 個字元
-    if msg.isalpha() and msg.isupper() and 1 <= len(msg) <= 5:
+    # 偵測邏輯：純英文字母，1-5 個字元；或是以 ^ 開頭的指數 (e.g. ^VIX)
+    is_us_stock = (msg.isalpha() and 1 <= len(msg) <= 5)
+    is_index = (msg.startswith('^') and msg[1:].isalpha() and 2 <= len(msg) <= 6)
+    
+    if (is_us_stock or is_index) and msg.isupper():
         print(f"[US Stock Query] Attempting to fetch: {msg}")
         us_stock = get_us_stock_info(msg)
         if us_stock:
