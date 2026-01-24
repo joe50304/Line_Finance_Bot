@@ -812,11 +812,13 @@ def generate_dashboard_flex_message(greeting_text, user_name, market_data):
                     # Target Market Dashboard Header
                     TextComponent(text="📊 重點行情", size='sm', weight='bold', color='#999999', margin='md'),
                     
-                    # Dashboard Rows
+                    # Dashboard Rows (with fallback for empty data)
                     BoxComponent(
                         layout='vertical',
                         margin='sm',
-                        contents=dashboard_rows
+                        contents=dashboard_rows if dashboard_rows else [
+                            TextComponent(text="📡 資料載入中...", size='sm', color='#999999', align='center')
+                        ]
                     ),
                     
                     SeparatorComponent(margin='lg'),
