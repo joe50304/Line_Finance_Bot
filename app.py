@@ -1337,6 +1337,9 @@ def handle_message(event):
         # 為了更精準控制 "大帥哥" 的位置，我們直接調用 get_greeting() 並稍作修飾
         
         
+        # 0. 取得問候語
+        greeting_msg = get_greeting()
+
         # 1. 取得市場 dashboard 數據
         market_data = get_market_dashboard_data()
         
