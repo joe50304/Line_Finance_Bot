@@ -1,1211 +1,48 @@
+
 import os
-import requests
-import pandas as pd
-import io  # <--- 新增這個套件，用來解決爬蟲報錯問題
-from datetime import datetime
-import pytz
-import yfinance as yf
 from flask import Flask, request, abort
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
 from linebot.models import (
-    MessageEvent, TextMessage, TextSendMessage, JoinEvent, ImageSendMessage,
-    FlexSendMessage, BubbleContainer, BoxComponent, TextComponent, ButtonComponent,
-    MessageAction, SeparatorComponent
+    MessageEvent, TextMessage, TextSendMessage, ImageSendMessage
 )
-from cachetools import cached, TTLCache
 import urllib3
+
+# Config & Utils
+from config import (
+    LINE_CHANNEL_ACCESS_TOKEN, LINE_CHANNEL_SECRET, TARGET_ID, 
+    VALID_CURRENCIES, BOT_USER_ID
+)
+# Note: BOT_USER_ID cache is better handled in app scope or a singleton, 
+# for now we keep the global variable logic here but initialize it via config logic or lazy load.
+
+from utils.common import get_greeting
+from utils.flex_templates import (
+    generate_currency_flex_message, generate_help_message, 
+    generate_currency_menu_flex, generate_dashboard_flex_message,
+    generate_us_stock_flex_message, generate_stock_flex_message
+)
+
+# Services
+from services.forex_service import get_taiwan_bank_rates, get_forex_info
+from services.stock_service import (
+    get_stock_info, get_us_stock_info, get_stock_name, 
+    generate_vix_report, get_market_dashboard_data
+)
+from services.chart_service import (
+    generate_forex_chart_url_yf, generate_stock_chart_url_yf
+)
+
 # 抑制 SSL 警告訊息
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 app = Flask(__name__)
 
-# --- 設定區 ---
-LINE_CHANNEL_ACCESS_TOKEN = os.environ.get('LINE_CHANNEL_ACCESS_TOKEN')
-LINE_CHANNEL_SECRET = os.environ.get('LINE_CHANNEL_SECRET')
-TARGET_ID = os.environ.get('MY_USER_ID', '')
-
 line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
 
-# --- 支援的幣別代碼清單 ---
-VALID_CURRENCIES = [
-    "USD", "HKD", "GBP", "AUD", "CAD", "SGD", "CHF", "JPY", "ZAR", "SEK", "NZD", 
-    "THB", "PHP", "IDR", "EUR", "KRW", "VND", "MYR", "CNY", "INR", "DKK", "MOP", 
-    "MXN", "TRY"
-]
+# --- Routes ---
 
-# --- 1. 問候語 ---
-def get_greeting():
-    try:
-        tz = pytz.timezone('Asia/Taipei')
-        now = datetime.now(tz)
-        hour = now.hour
-        if 5 <= hour < 12: return "早上好 🌞"
-        elif 12 <= hour < 18: return "下午好 🍱"
-        elif 18 <= hour < 24: return "晚安 🌙"
-        else: return "凌晨好 🌞"
-    except:
-        return "你好 🤖"
-
-# --- 2. 爬蟲：比率網 (FindRate) ---
-rate_cache = TTLCache(maxsize=30, ttl=300)
-
-@cached(rate_cache)
-def get_taiwan_bank_rates(currency_code="HKD"):
-    """
-    從比率網 (FindRate) 抓取台灣各家銀行的「現鈔賣出」匯率
-    """
-    try:
-        url = f"https://www.findrate.tw/{currency_code}/"
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-        }
-        response = requests.get(url, headers=headers)
-        response.encoding = 'utf-8' 
-        
-        # 【關鍵修正】使用 io.StringIO 包裝，避免 pandas 把 HTML 當成檔名
-        html_buffer = io.StringIO(response.text)
-        dfs = pd.read_html(html_buffer)
-        
-        target_df = None
-        for df in dfs:
-            # 必須包含 "現鈔賣出" 才是我們要的表格
-            # 轉為 string 來搜尋關鍵字
-            cols_str = str(df.columns)
-            if "現鈔賣出" in cols_str: 
-                 target_df = df
-                 break
-        
-        # Fallback: if not found, check if any table has enough columns and looks like it
-        if target_df is None:
-            for df in dfs:
-                if len(df.columns) >= 5 and "銀行" in str(df.columns):
-                    target_df = df
-                    break
-        
-        if target_df is None:
-            return f"找不到 {currency_code} 的匯率表格，可能該網站未提供。"
-
-        # 0=銀行, 1=現鈔買入, 2=現鈔賣出, 3=即期買入, 4=即期賣出, 5=更新時間
-        # 準備輸出文字報告 (已廢棄 purely text return，改回傳 list 給 Flex Message 用)
-        # 為了相容舊邏輯，我們這裡回傳 dict 列表，如果 caller 是舊的再轉字串 (但我們會更新 caller)
-        
-        bank_rates = []
-        
-        for i in range(len(target_df)):
-            try:
-                row = target_df.iloc[i]
-                bank_name = str(row.iloc[0]).strip()
-                cash_selling = str(row.iloc[2]).strip() # 現鈔賣出
-                spot_selling = str(row.iloc[4]).strip() # 即期賣出
-                # Col 5 is usually time
-                update_time = str(row.iloc[5]).strip()
-
-                if bank_name in ["銀行名稱", "銀行", "幣別"]: continue
-                if cash_selling == '--' and spot_selling == '--': continue
-                if len(bank_name) > 20: continue
-
-                # 處理數值 (優先排現鈔，若無現鈔排即期)
-                rate_val = 9999.0
-                try: rate_val = float(cash_selling)
-                except: 
-                    try: rate_val = float(spot_selling)
-                    except: pass
-                
-                bank_rates.append({
-                    "bank": bank_name,
-                    "cash_selling": cash_selling,
-                    "spot_selling": spot_selling,
-                    "rate_sort": rate_val,
-                    "time": update_time
-                })
-            except: continue
-
-        bank_rates.sort(key=lambda x: x['rate_sort'])
-        return bank_rates[:10] # 回傳前 10 名 list
-        
-    except Exception as e:
-        print(f"Scrape Error: {e}")
-        return []
-        
-    except Exception as e:
-        # 只回傳簡短錯誤，避免塞爆 LINE
-        return f"查詢失敗: {str(e)[:100]}..."
-
-# --- 3. API：Yahoo Finance (國際匯率) ---
-def get_forex_info(currency_code):
-    try:
-        symbol = f"{currency_code}TWD=X"
-        ticker = yf.Ticker(symbol)
-        info = ticker.fast_info
-        
-        if not hasattr(info, 'last_price') or info.last_price is None:
-            return None
-
-        current_price = info.last_price
-        prev_close = info.previous_close
-        
-        change = current_price - prev_close
-        change_percent = (change / prev_close) * 100
-        
-        return {
-            "currency": currency_code,
-            "price": current_price,
-            "change": change,
-            "change_percent": change_percent
-        }
-    except Exception as e:
-        print(f"Forex Info Error: {e}")
-        return None
-
-# --- 4. 圖表產生器 ---
-def generate_forex_chart_url_yf(currency_code, period="1d", interval="15m"):
-    """
-    產生匯率走勢圖
-    """
-    try:
-        symbol = f"{currency_code}TWD=X"
-        ticker = yf.Ticker(symbol)
-        data = ticker.history(period=period, interval=interval)
-        
-        # Fallback 1: 1d 沒資料 -> 抓 5d
-        if data.empty and period == '1d':
-            period = '5d'
-            interval = '60m'
-            data = ticker.history(period=period, interval=interval)
-
-        # Fallback 2: 1y 沒資料 (偶爾發生) -> 嘗試抓 6mo
-        if data.empty and period == '1y':
-            period = '6mo'
-            data = ticker.history(period=period, interval=interval)
-
-        if data.empty:
-            return None
-            
-        dates = []
-        prices = []
-        
-        # 格式化 X 軸日期
-        for index, row in data.iterrows():
-            if period == '1d':
-                dt_str = index.strftime('%H:%M')
-            elif period == '5d':
-                dt_str = index.strftime('%m/%d %H')
-            else:
-                dt_str = index.strftime('%Y-%m-%d')
-                
-            dates.append(dt_str)
-            prices.append(row['Close'])
-
-        # 【關鍵修正】縮減資料點 (QuickChart URL 長度限制)
-        # 如果資料點超過 60 個，就進行抽樣，確保 1Y 圖表能顯示
-        if len(dates) > 60:
-            step = len(dates) // 60 + 1
-            dates = dates[::step]
-            prices = prices[::step]
-
-        # QuickChart 設定
-        chart_config = {
-            "type": "line",
-            "data": {
-                "labels": dates,
-                "datasets": [{
-                    "label": f"{currency_code}/TWD ({period})",
-                    "data": prices,
-                    "borderColor": "#1DB446",
-                    "backgroundColor": "rgba(29, 180, 70, 0.1)",
-                    "fill": True,
-                    "pointRadius": 0,
-                    "borderWidth": 2,
-                    "lineTension": 0.1
-                }]
-            },
-            "options": {
-                "title": {"display": True, "text": f"{currency_code} 匯率走勢 ({period})"},
-                "legend": {"display": False},
-                "scales": {
-                    "yAxes": [{"ticks": {"beginAtZero": False}}],
-                    "xAxes": [{"ticks": {"autoSkip": True, "maxTicksLimit": 6}}] 
-                }
-            }
-        }
-        
-        url = "https://quickchart.io/chart/create"
-        payload = {
-            "chart": chart_config,
-            "width": 800,
-            "height": 600,
-            "backgroundColor": "white",
-            "version": "2.9.4"
-        }
-        
-        response = requests.post(url, json=payload, headers={'Content-Type': 'application/json'})
-        if response.status_code == 200:
-            return response.json().get('url')
-        else:
-            return None
-            
-    except Exception as e:
-        print(f"Chart Error: {e}")
-        return None
-
-# --- 5. Flex Message ---
-def generate_currency_flex_message(forex_data, bank_report_text):
-    c_code = forex_data['currency']
-    price = forex_data['price']
-    change = forex_data['change']
-    percent = forex_data['change_percent']
-    
-    if change > 0: color = "#eb4e3d"; sign = "+"
-    elif change < 0: color = "#27ba46"; sign = ""
-    else: color = "#333333"; sign = ""
-
-    # Build Top 5 Banks Rows
-    bank_rows = []
-    # Header
-    bank_rows.append(
-        BoxComponent(
-            layout='horizontal',
-            contents=[
-                TextComponent(text="銀行", size='xxs', color='#aaaaaa', flex=3),
-                TextComponent(text="現鈔賣出", size='xxs', color='#aaaaaa', align='end', flex=2),
-                TextComponent(text="即期賣出", size='xxs', color='#aaaaaa', align='end', flex=2)
-            ]
-        )
-    )
-    
-    # Data Rows
-    # bank_report_text is now a LIST of dicts based on our change to get_taiwan_bank_rates
-    # But wait, we need to handle if it's still a string (error message) or list
-    if isinstance(bank_report_text, list):
-        for i, b in enumerate(bank_report_text[:5]): # Top 5
-            row_color = "#333333"
-            if i == 0: row_color = "#eb4e3d" # Top 1 highlight
-            
-            bank_rows.append(
-                BoxComponent(
-                    layout='horizontal', margin='xs',
-                    contents=[
-                        TextComponent(text=b['bank'], size='xs', color=row_color, flex=3, weight='bold' if i==0 else 'regular'),
-                        TextComponent(text=b['cash_selling'], size='xs', color=row_color, align='end', flex=2),
-                        TextComponent(text=b['spot_selling'], size='xs', color='#555555', align='end', flex=2)
-                    ]
-                )
-            )
-    else:
-        # Fallback if error string
-        bank_rows.append(TextComponent(text=str(bank_report_text), size='xs', color='#ff0000'))
-
-
-    return FlexSendMessage(
-        alt_text=f"{c_code} 匯率快報",
-        contents=BubbleContainer(
-            body=BoxComponent(
-                layout='vertical',
-                contents=[
-                    TextComponent(text=f"{c_code}/TWD 匯率", weight='bold', size='xl', color='#555555'),
-                    TextComponent(text="台灣時間即時行情 (Yahoo)", size='xxs', color='#aaaaaa'),
-                    BoxComponent(
-                        layout='baseline', margin='md',
-                        contents=[
-                            TextComponent(text=f"{price:.4f}", weight='bold', size='3xl', color=color),
-                            TextComponent(text=f"{sign}{change:.4f} ({sign}{percent:.2f}%)", size='xs', color=color, margin='md', flex=0)
-                        ]
-                    ),
-                    SeparatorComponent(margin='lg'),
-                    TextComponent(text="🇹🇼 台灣銀行最佳匯率 (Top 5)", size='sm', weight='bold', color='#555555', margin='lg'),
-                    BoxComponent(
-                        layout='vertical', margin='md', spacing='xs',
-                        contents=bank_rows
-                    ),
-                    SeparatorComponent(margin='lg'),
-                    TextComponent(text="歷史走勢圖:", size='xs', color='#aaaaaa', margin='md'),
-                    BoxComponent(
-                        layout='horizontal', margin='sm', spacing='sm',
-                        contents=[
-                            ButtonComponent(style='secondary', height='sm', action=MessageAction(label='1日走勢', text=f'{c_code} 1D')),
-                            ButtonComponent(style='secondary', height='sm', action=MessageAction(label='5日走勢', text=f'{c_code} 5D'))
-                        ]
-                    ),
-                    BoxComponent(
-                        layout='horizontal', margin='sm', spacing='sm',
-                        contents=[
-                            ButtonComponent(style='secondary', height='sm', action=MessageAction(label='1月走勢', text=f'{c_code} 1M')),
-                            ButtonComponent(style='secondary', height='sm', action=MessageAction(label='1年走勢', text=f'{c_code} 1Y'))
-                        ]
-                    ),
-                    ButtonComponent(style='link', height='sm', action=MessageAction(label='查看完整銀行比價', text=f'{c_code} 列表'))
-                ]
-            )
-        )
-    )
-
-def generate_help_message():
-    """產生整合式功能說明選單"""
-    return FlexSendMessage(
-        alt_text="功能選單",
-        contents=BubbleContainer(
-            body=BoxComponent(
-                layout='vertical',
-                contents=[
-                    TextComponent(text="🤖 金融助手功能導覽", weight='bold', size='lg', color='#1DB446'),
-                    TextComponent(text="點擊下方按鈕或輸入指令試試看！", size='xs', color='#aaaaaa', margin='xs'),
-                    
-                    SeparatorComponent(margin='md'),
-                    
-                    # 1. 外匯專區
-                    TextComponent(text="🌏 外匯查詢", weight='bold', size='sm', color='#555555', margin='md'),
-                    BoxComponent(
-                        layout='horizontal', spacing='sm', margin='sm',
-                        contents=[
-                            ButtonComponent(style='secondary', height='sm', action=MessageAction(label='幣別選單', text='幣別選單')),
-                            ButtonComponent(style='secondary', height='sm', action=MessageAction(label='日幣走勢', text='JPY 圖')),
-                            ButtonComponent(style='secondary', height='sm', action=MessageAction(label='美金匯率', text='USD'))
-                        ]
-                    ),
-                    TextComponent(text="指令: 輸入幣別代碼 (如 USD, EUR)", size='xs', color='#999999', margin='xs', wrap=True),
-
-                    SeparatorComponent(margin='md'),
-
-                    # 2. 台股專區
-                    TextComponent(text="📈 台股資訊", weight='bold', size='sm', color='#555555', margin='md'),
-                    BoxComponent(
-                        layout='horizontal', spacing='sm', margin='sm',
-                        contents=[
-                            ButtonComponent(style='secondary', height='sm', action=MessageAction(label='台積電', text='2330')),
-                            ButtonComponent(style='secondary', height='sm', action=MessageAction(label='台積電 K線', text='2330 日K')),
-                            ButtonComponent(style='secondary', height='sm', action=MessageAction(label='0050', text='0050'))
-                        ]
-                    ),
-                    TextComponent(text="指令: {代號} 或 {代號} {K線/即時/交易量}", size='xs', color='#999999', margin='xs', wrap=True),
-
-                    SeparatorComponent(margin='md'),
-
-                    # 3. 美股專區
-                    TextComponent(text="🇺🇸 美股報價", weight='bold', size='sm', color='#555555', margin='md'),
-                    BoxComponent(
-                        layout='horizontal', spacing='sm', margin='sm',
-                        contents=[
-                            ButtonComponent(style='secondary', height='sm', action=MessageAction(label='蘋果', text='AAPL')),
-                            ButtonComponent(style='secondary', height='sm', action=MessageAction(label='輝達', text='NVDA')),
-                            ButtonComponent(style='secondary', height='sm', action=MessageAction(label='VIX 指數', text='^VIX'))
-                        ]
-                    ),
-                    TextComponent(text="指令: 輸入美股代碼 (如 TSLA, MSFT)", size='xs', color='#999999', margin='xs', wrap=True),
-                    
-                    SeparatorComponent(margin='md'),
-                    
-                    # Footer
-                    ButtonComponent(style='link', height='sm', action=MessageAction(label='查詢 ID', text='ID'), margin='sm')
-                ]
-            )
-        )
-    )
-
-def generate_currency_menu_flex():
-    """產生熱門幣別選擇選單"""
-    # 定義熱門 8 大幣別
-    currencies = [
-        {"code": "USD", "name": "美金"}, {"code": "JPY", "name": "日圓"},
-        {"code": "EUR", "name": "歐元"}, {"code": "CNY", "name": "人民幣"},
-        {"code": "KRW", "name": "韓元"}, {"code": "AUD", "name": "澳幣"},
-        {"code": "GBP", "name": "英鎊"}, {"code": "THB", "name": "泰銖"}
-    ]
-    
-    # Grid Layout: 2 columns x 4 rows
-    rows = []
-    current_row = []
-    
-    for i, curr in enumerate(currencies):
-        btn = ButtonComponent(
-            style='secondary', 
-            height='sm',
-            action=MessageAction(label=f"{curr['name']} ({curr['code']})", text=f"{curr['code']} 列表"), # 直接查列表
-            flex=1
-        )
-        current_row.append(btn)
-        
-        # 每兩個換一行，或是最後一個
-        if len(current_row) == 2 or i == len(currencies) - 1:
-            # 補齊空位 (如果奇數個)
-            if len(current_row) == 1:
-                 current_row.append(FillerComponent())
-            
-            rows.append(BoxComponent(layout='horizontal', spacing='sm', margin='sm', contents=current_row))
-            current_row = []
-
-    return FlexSendMessage(
-        alt_text="請選擇幣別",
-        contents=BubbleContainer(
-            header=BoxComponent(
-                layout='vertical',
-                contents=[
-                    TextComponent(text="🌏 選擇幣別", weight='bold', size='lg', color='#1DB446', align='center')
-                ]
-            ),
-            body=BoxComponent(
-                layout='vertical',
-                contents=rows
-            )
-        )
-    )
-
-# --- 台股功能 (保留) ---
-def get_valid_stock_obj(symbol):
-    def fetch(t):
-        try: s = yf.Ticker(t); return s, s.fast_info
-        except: return None, None
-    for suffix in [".TW", ".TWO"]:
-        s, i = fetch(symbol + suffix)
-        try:
-            if i and hasattr(i, 'last_price') and i.last_price: return s, i, suffix
-        except: continue
-    return None, None, None
-
-
-# 補充: 取得 TWSE 額外資訊 (PE/PB/Yield)
-@cached(TTLCache(maxsize=1, ttl=300))
-def get_twse_stats():
-    try:
-        url = "https://openapi.twse.com.tw/v1/exchangeReport/BWIBBU_ALL"
-        r = requests.get(url)
-        if r.status_code == 200:
-            data = r.json()
-            stats = {}
-            for item in data:
-                code = item.get('Code')
-                stats[code] = {
-                    "PE": item.get('PEratio', '-'), 
-                    "Yield": item.get('DividendYield', '-'),
-                    "PB": item.get('PBratio', '-')
-                }
-            return stats
-    except: pass
-    return {}
-
-# Helper: 取得股票中文名稱 (MIS API)
-@cached(TTLCache(maxsize=100, ttl=3600))
-def get_stock_name(symbol):
-    try:
-        # 嘗試從 MIS API 取得名稱 (涵蓋上市/上櫃/興櫃)
-        targets = [f"tse_{symbol}.tw", f"otc_{symbol}.tw", f"emg_{symbol}.tw"]
-        query = "|".join(targets)
-        url = f"https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch={query}&json=1&delay=0"
-        
-        # 稍微加個 header 避免被擋
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0'}
-        # 加入 verify=False 避免某些環境的 SSL 憑證問題
-        r = requests.get(url, headers=headers, timeout=5, verify=False)
-        
-        if r.status_code == 200:
-            data = r.json()
-            if 'msgArray' in data:
-                for item in data['msgArray']:
-                    # 確保 item 有 'c' (代碼) 且匹配我們要找的股票
-                    if item.get('c') == symbol and item.get('n'):
-                        name = item.get('n')
-                        print(f"Successfully fetched name for {symbol}: {name}")
-                        return name
-                print(f"No name found in msgArray for {symbol}")
-            else:
-                print(f"No msgArray in response for {symbol}")
-        else:
-            print(f"HTTP {r.status_code} for {symbol}")
-    except Exception as e:
-        print(f"Error getting stock name for {symbol}: {e}")
-    
-    print(f"Falling back to symbol for {symbol}")
-    return symbol # Fallback to symbol if failed
-
-def get_stock_info(symbol):
-    try:
-        stock, info, suffix = get_valid_stock_obj(symbol)
-        if not stock: return None
-        
-        # 嘗試取得額外資訊
-        avg_price = 0
-        try:
-            # Note: detailed info might be slow
-            # avg_price = stock.info.get('fiftyDayAverage', 0)
-            pass 
-        except: pass
-
-        extra_stats = {}
-        if suffix == ".TW":
-             all_stats = get_twse_stats()
-             if symbol in all_stats: extra_stats = all_stats[symbol]
-
-        # 取得中文名稱
-        stock_name = get_stock_name(symbol)
-        
-        # 如果是 7866 這種 MIS 抓不到的，嘗試特殊名稱 (Hardcode or fallback)
-        # User 說 7866 是 丹立
-        if symbol == '7866' and stock_name == '7866':
-            stock_name = "丹立"
-
-        # Safely get properties
-        price = info.last_price
-        prev_close = info.previous_close
-        
-        # Some emerging stocks might fail on previous_close or other fields
-        if prev_close is None:
-            # Try regular info as fallback? No, fast_info is better.
-            # Just assume 0 change logic or safely handle
-            prev_close = price # fallback to avoid zero division
-
-        change = price - prev_close
-        try:
-             change_percent = (change / prev_close * 100) if prev_close else 0
-        except: change_percent = 0
-            
-        return {
-            "symbol": symbol, "name": stock_name,
-            "price": price, 
-            "change": change,
-            "change_percent": change_percent,
-            "limit_up": prev_close * 1.1 if prev_close else 0, 
-            "limit_down": prev_close * 0.9 if prev_close else 0,
-            "volume": info.last_volume, 
-            "high": info.day_high, 
-            "low": info.day_low,
-            "avg_price": avg_price,
-            "type": "上櫃" if suffix == ".TWO" else "上市",
-            "PE": extra_stats.get("PE", "-"),
-            "Yield": extra_stats.get("Yield", "-"),
-            "PB": extra_stats.get("PB", "-")
-        }
-    except Exception as e:
-        print(f"Error getting stock info: {e}")
-        return None
-
-# --- 美股功能 ---
-def get_us_stock_info(symbol):
-    """取得美股即時資訊"""
-    try:
-        ticker = yf.Ticker(symbol)
-        info = ticker.info
-        
-        # 取得價格資訊
-        price = info.get('currentPrice') or info.get('regularMarketPrice')
-        prev_close = info.get('previousClose') or info.get('regularMarketPreviousClose')
-        
-        if not price:
-            return None
-            
-        change = price - prev_close if prev_close else 0
-        change_percent = (change / prev_close * 100) if prev_close else 0
-        
-        return {
-            "symbol": symbol,
-            "name": info.get('shortName') or info.get('longName') or symbol,
-            "price": price,
-            "change": change,
-            "change_percent": change_percent,
-            "high": info.get('dayHigh') or info.get('regularMarketDayHigh') or 0,
-            "low": info.get('dayLow') or info.get('regularMarketDayLow') or 0,
-            "volume": info.get('volume') or info.get('regularMarketVolume') or 0,
-            "market_cap": info.get('marketCap', 0),
-            "pe_ratio": info.get('trailingPE', '-'),
-            "week_52_high": info.get('fiftyTwoWeekHigh', '-'),
-            "week_52_low": info.get('fiftyTwoWeekLow', '-')
-        }
-    except Exception as e:
-        print(f"Error getting US stock info for {symbol}: {e}")
-        return None
-
-def generate_us_stock_flex_message(data):
-    """生成美股資訊 Flex Message（美股慣例：紅漲綠跌）"""
-    # 美股顏色：紅漲綠跌
-    color = "#eb4e3d" if data['change'] > 0 else "#27ba46" if data['change'] < 0 else "#333333"
-    sign = "+" if data['change'] > 0 else ""
-    
-    # 格式化市值
-    market_cap = data['market_cap']
-    if market_cap > 1_000_000_000_000:
-        market_cap_str = f"${market_cap/1_000_000_000_000:.2f}T"
-    elif market_cap > 1_000_000_000:
-        market_cap_str = f"${market_cap/1_000_000_000:.2f}B"
-    elif market_cap > 1_000_000:
-        market_cap_str = f"${market_cap/1_000_000:.2f}M"
-    else:
-        market_cap_str = f"${market_cap:,.0f}"
-    
-    return FlexSendMessage(
-        alt_text=f"{data['symbol']} 美股",
-        contents=BubbleContainer(
-            body=BoxComponent(
-                layout='vertical',
-                contents=[
-                    TextComponent(text=f"🇺🇸 {data['name']}", weight='bold', size='lg', wrap=True),
-                    TextComponent(text=data['symbol'], size='sm', color='#999999', margin='xs'),
-                    BoxComponent(
-                        layout='baseline', margin='md',
-                        contents=[
-                            TextComponent(text=f"${data['price']:.2f}", weight='bold', size='3xl', color=color),
-                            TextComponent(text=f"{sign}{data['change']:.2f} ({sign}{data['change_percent']:.2f}%)", 
-                                        size='sm', color=color, margin='md', flex=0)
-                        ]
-                    ),
-                    SeparatorComponent(margin='lg'),
-                    BoxComponent(
-                        layout='vertical', margin='lg', spacing='sm',
-                        contents=[
-                            BoxComponent(
-                                layout='baseline',
-                                contents=[
-                                    TextComponent(text="最高", color='#aaaaaa', size='sm', flex=1),
-                                    TextComponent(text=f"${data['high']:.2f}", align='end', size='sm', flex=2),
-                                    TextComponent(text="最低", color='#aaaaaa', size='sm', flex=1),
-                                    TextComponent(text=f"${data['low']:.2f}", align='end', size='sm', flex=2)
-                                ]
-                            ),
-                            BoxComponent(
-                                layout='baseline',
-                                contents=[
-                                    TextComponent(text="成交量", color='#aaaaaa', size='sm', flex=1),
-                                    TextComponent(text=f"{data['volume']:,}", align='end', size='sm', flex=2),
-                                    TextComponent(text="市值", color='#aaaaaa', size='sm', flex=1),
-                                    TextComponent(text=market_cap_str, align='end', size='sm', flex=2)
-                                ]
-                            ),
-                            BoxComponent(
-                                layout='baseline',
-                                contents=[
-                                    TextComponent(text="P/E", color='#aaaaaa', size='sm', flex=1),
-                                    TextComponent(text=str(data['pe_ratio']) if data['pe_ratio'] != '-' else '-', 
-                                                align='end', size='sm', flex=2),
-                                    TextComponent(text="52週區間", color='#aaaaaa', size='sm', flex=1),
-                                    TextComponent(text=f"${data['week_52_low']:.2f}-${data['week_52_high']:.2f}" 
-                                                if data['week_52_high'] != '-' else '-', 
-                                                align='end', size='xs', flex=2)
-                                ]
-                            )
-                        ]
-                    )
-                ]
-            )
-        )
-    )
-
-# --- 市場儀表板 (Dashboard) ---
-def get_market_dashboard_data():
-    """取得市場儀表板數據 (^VIX, ^TWII, 0050.TW, 2330.TW)"""
-    tickers = ["^VIX", "^TWII", "0050.TW", "2330.TW"]
-    
-    # 中文名稱映射
-    name_map = {
-        "^VIX": "VIX 恐慌",
-        "^TWII": "加權指數",
-        "0050.TW": "元大 0050",
-        "2330.TW": "台積電"
-    }
-    
-    results = []
-    
-    try:
-        # 批量下載 (Period='5d' for safety to calculate change)
-        # threads=True 加速下載
-        df = yf.download(tickers, period="5d", interval="1d", group_by='ticker', threads=True)
-        
-        for symbol in tickers:
-            item_data = {
-                "symbol": symbol,
-                "name": name_map.get(symbol, symbol),
-                "price": "-", "change": 0, "change_percent": 0, "color": "#333333", "sign": "",
-                "action_text": symbol.replace(".TW", "") # Remove suffix for command
-            }
-            
-            try:
-                # 處理 DataFrame 結構
-                if len(tickers) > 1:
-                    ticker_df = df[symbol]
-                else:
-                    ticker_df = df
-                
-                # 移除 NaN 並取得最後兩筆資料
-                ticker_df = ticker_df.dropna(subset=['Close'])
-                
-                if not ticker_df.empty:
-                    last_row = ticker_df.iloc[-1]
-                    price = last_row['Close']
-                    
-                    if len(ticker_df) >= 2:
-                        prev_row = ticker_df.iloc[-2]
-                        prev_close = prev_row['Close']
-                        change = price - prev_close
-                        change_percent = (change / prev_close) * 100
-                    else:
-                        change = 0
-                        change_percent = 0
-                    
-                    # 格式化
-                    color = "#eb4e3d" if change > 0 else "#27ba46" if change < 0 else "#333333"
-                    sign = "+" if change > 0 else ""
-                    
-                    item_data.update({
-                        "price": f"{price:,.2f}",
-                        "change": change, # Keep float for logic if needed, currently unused
-                        "change_str": f"{sign}{change:.2f}",
-                        "change_percent": f"{sign}{change_percent:.2f}%",
-                        "color": color
-                    })
-
-                    # 特殊處理: 如果是 VIX，顏色邏輯相反 (越高越恐慌=紅?) 
-                    # 一般習慣: 股市紅漲綠跌。VIX 上漲通常伴隨股市下跌。
-                    # 這裡保持一致性: 數值變大由紅，變小用綠。
-                    
-            except Exception as e:
-                print(f"Error processing {symbol} in dashboard: {e}")
-            
-            results.append(item_data)
-            
-        return results
-
-    except Exception as e:
-        print(f"Error getting market dashboard data: {e}")
-        return []
-
-def generate_dashboard_flex_message(greeting_text, user_name, market_data):
-    """
-    產生市場快況儀表板 Flex Message
-    greeting_text: 問候語 (e.g. "早安 🌞")
-    user_name:使用者名稱 (e.g. "Joe")
-    market_data: get_market_dashboard_data() 的回傳結果 list
-    """
-    
-    # 建立 Dashboard Items (2x2 Grid or List)
-    # 這裡使用 Vertical List of Boxes for clear reading
-    
-    dashboard_rows = []
-    
-    for item in market_data:
-        # Row for each market index
-        row = BoxComponent(
-            layout='baseline',
-            spacing='sm',
-            margin='md',
-            action=MessageAction(label=item['name'], text=item['action_text']), # 點擊觸發查詢
-            contents=[
-               TextComponent(text=item['name'], size='sm', color='#555555', flex=4),
-               TextComponent(text=item['price'], size='sm', weight='bold', align='end', flex=3),
-               TextComponent(text=item['change_percent'], size='xs', color=item['color'], align='end', flex=3)
-            ]
-        )
-        dashboard_rows.append(row)
-        # dashboard_rows.append(SeparatorComponent(margin='sm')) # Optional separator
-
-    return FlexSendMessage(
-        alt_text=f"{greeting_text}！市場快訊",
-        contents=BubbleContainer(
-            size='giga', # Make it wider
-            body=BoxComponent(
-                layout='vertical',
-                contents=[
-                    # Header Section with Greeting
-                    TextComponent(text=f"{greeting_text}", weight='bold', size='xl', color='#1DB446'),
-                    TextComponent(text=f"{user_name} 大帥哥！", weight='bold', size='lg', margin='xs'),
-                    TextComponent(text="我是您的金融小幫手 🤖", size='xs', color='#aaaaaa', margin='xs'),
-                    
-                    SeparatorComponent(margin='md'),
-                    
-                    # Target Market Dashboard Header
-                    TextComponent(text="📊 重點行情", size='sm', weight='bold', color='#999999', margin='md'),
-                    
-                    # Dashboard Rows (with fallback for empty data)
-                    BoxComponent(
-                        layout='vertical',
-                        margin='sm',
-                        contents=dashboard_rows if dashboard_rows else [
-                            TextComponent(text="📡 資料載入中...", size='sm', color='#999999', align='center')
-                        ]
-                    ),
-                    
-                    SeparatorComponent(margin='lg'),
-                    
-                    # Footer Buttons
-                    BoxComponent(
-                        layout='horizontal',
-                        margin='md',
-                        spacing='sm',
-                        contents=[
-                            ButtonComponent(
-                                style='secondary', height='sm', 
-                                action=MessageAction(label='匯率選單', text='匯率選單')
-                            ),
-                            ButtonComponent(
-                                style='secondary', height='sm', 
-                                action=MessageAction(label='使用說明', text='使用說明')
-                            )
-                        ]
-                    )
-                ]
-            )
-        )
-    )
-def get_vix_data(days=5):
-    """取得過去 N 天的 VIX 恐慌指數資料"""
-    try:
-        vix = yf.Ticker("^VIX")
-        # 取得過去 days 天的資料（多抓幾天以防假日）
-        hist = vix.history(period=f"{days+5}d")
-        
-        if hist.empty:
-            return None
-        
-        # 只取最後 N 天
-        hist = hist.tail(days)
-        
-        vix_data = []
-        for index, row in hist.iterrows():
-            vix_data.append({
-                "date": index.strftime('%Y-%m-%d'),
-                "value": row['Close']
-            })
-        
-        return vix_data
-    except Exception as e:
-        print(f"Error getting VIX data: {e}")
-        return None
-
-def generate_vix_report():
-    """生成 VIX 恐慌指數報告"""
-    vix_data = get_vix_data(5)
-    
-    if not vix_data:
-        return "❌ 無法取得 VIX 資料"
-    
-    # 取得最新 VIX 值
-    latest_vix = vix_data[-1]['value']
-    
-    # 判斷市場情緒
-    if latest_vix < 15:
-        sentiment = "😌 市場平靜"
-        sentiment_desc = "投資人情緒穩定"
-    elif latest_vix < 20:
-        sentiment = "📊 正常波動"
-        sentiment_desc = "市場處於正常狀態"
-    elif latest_vix < 30:
-        sentiment = "😰 市場緊張"
-        sentiment_desc = "投資人開始擔憂"
-    else:
-        sentiment = "😱 高度恐慌"
-        sentiment_desc = "市場處於恐慌狀態"
-    
-    # 組合報告
-    report = f"📉 VIX 恐慌指數報告\n"
-    report += f"{'='*25}\n\n"
-    report += f"📅 過去 5 天 VIX 數值：\n\n"
-    
-    for item in vix_data:
-        report += f"{item['date']}: {item['value']:.2f}\n"
-    
-    report += f"\n{'='*25}\n"
-    report += f"目前狀態：{sentiment}\n"
-    report += f"{sentiment_desc}\n\n"
-    report += f"💡 說明：\n"
-    report += f"• VIX < 15: 市場平靜\n"
-    report += f"• VIX 15-20: 正常波動\n"
-    report += f"• VIX 20-30: 市場緊張\n"
-    report += f"• VIX > 30: 高度恐慌"
-    
-    return report
-
-
-def generate_stock_flex_message(data):
-    color = "#eb4e3d" if data['change'] > 0 else "#27ba46" if data['change'] < 0 else "#333333"
-    sign = "+" if data['change'] > 0 else ""
-    
-    return FlexSendMessage(
-        alt_text=f"{data['symbol']} 股價",
-        contents=BubbleContainer(
-            body=BoxComponent(
-                layout='vertical',
-                contents=[
-                    TextComponent(text=f"{data['name']} ({data['symbol']})", weight='bold', size='xl'),
-                    BoxComponent(
-                        layout='baseline', margin='md',
-                        contents=[
-                            TextComponent(text=f"{data['price']:.2f}", weight='bold', size='3xl', color=color),
-                            TextComponent(text=f"{sign}{data['change']:.2f} ({sign}{data['change_percent']:.2f}%)", size='sm', color=color, margin='md', flex=0)
-                        ]
-                    ),
-                    SeparatorComponent(margin='lg'),
-                    BoxComponent(
-                        layout='vertical', margin='lg', spacing='sm',
-                        contents=[
-                            BoxComponent(
-                                layout='baseline',
-                                contents=[
-                                    TextComponent(text="漲停", color='#aaaaaa', size='sm', flex=1),
-                                    TextComponent(text=f"{data['limit_up']:.2f}", align='end', color='#eb4e3d', size='sm', flex=2),
-                                    TextComponent(text="跌停", color='#aaaaaa', size='sm', flex=1),
-                                    TextComponent(text=f"{data['limit_down']:.2f}", align='end', color='#27ba46', size='sm', flex=2)
-                                ]
-                            ),
-                            BoxComponent(
-                                layout='baseline',
-                                contents=[
-                                    TextComponent(text="最高", color='#aaaaaa', size='sm', flex=1),
-                                    TextComponent(text=f"{data['high']:.2f}", align='end', size='sm', flex=2),
-                                    TextComponent(text="最低", color='#aaaaaa', size='sm', flex=1),
-                                    TextComponent(text=f"{data['low']:.2f}", align='end', size='sm', flex=2)
-                                ]
-                            ),
-                            BoxComponent(
-                                layout='baseline',
-                                contents=[
-                                    TextComponent(text="總量", color='#aaaaaa', size='sm', flex=1),
-                                    TextComponent(text=f"{data['volume']:,.0f}", align='end', size='sm', flex=2),
-                                    TextComponent(text="類型", color='#aaaaaa', size='sm', flex=1),
-                                    TextComponent(text=f"{data['type']}", align='end', size='sm', flex=2)
-                                ]
-                            ),
-                            BoxComponent(
-                                layout='baseline',
-                                contents=[
-                                    TextComponent(text="本益比", color='#aaaaaa', size='sm', flex=1),
-                                    TextComponent(text=f"{data.get('twse_stats', {}).get('PE', '-')}", align='end', size='sm', flex=2),
-                                    TextComponent(text="殖利率", color='#aaaaaa', size='sm', flex=1),
-                                    TextComponent(text=f"{data.get('twse_stats', {}).get('Yield', '-')}%" if data.get('twse_stats', {}).get('Yield', '-') != '-' else '-', align='end', size='sm', flex=2)
-                                ]
-                            )
-                        ]
-                    ),
-                    SeparatorComponent(margin='lg'),
-                    BoxComponent(
-                        layout='vertical', margin='md', spacing='sm',
-                        contents=[
-                            ButtonComponent(
-                                style='primary', height='sm',
-                                action=MessageAction(label='即時走勢圖', text=f"{data['symbol']} 即時")
-                            ),
-                            BoxComponent(
-                                layout='horizontal', spacing='sm',
-                                contents=[
-                                    ButtonComponent(style='secondary', height='sm', action=MessageAction(label='日 K', text=f"{data['symbol']} 日K")),
-                                    ButtonComponent(style='secondary', height='sm', action=MessageAction(label='週 K', text=f"{data['symbol']} 週K")),
-                                    ButtonComponent(style='secondary', height='sm', action=MessageAction(label='月 K', text=f"{data['symbol']} 月K"))
-                                ]
-                            ),
-                            ButtonComponent(style='link', height='sm', action=MessageAction(label='近3日交易量', text=f"{data['symbol']} 交易量"))
-                        ]
-                    )
-                ]
-            )
-        )
-    )
-
-def generate_stock_chart_url_yf(symbol, period="1d", interval="15m", chart_type="line", stock_name=None):
-    """
-    產生台股走勢圖 (自動判斷上市/上櫃)
-    chart_type: 'line' (折線圖), 'candlestick' (K線圖), 'bar' (交易量)
-    stock_name: 股票中文名稱 (optional)
-    """
-    # 如果沒有提供中文名稱，嘗試取得
-    if not stock_name:
-        stock_name = get_stock_name(symbol)
-        if stock_name == symbol:
-            display_name = symbol
-        else:
-            display_name = f"{symbol} {stock_name}"
-    else:
-        display_name = f"{symbol} {stock_name}"
-    try:
-        # 判斷是上市還是上櫃
-        stock, info, suffix = get_valid_stock_obj(symbol)
-        if not stock: return None
-        
-        full_symbol = symbol + suffix
-        ticker = yf.Ticker(full_symbol)
-        
-        data = ticker.history(period=period, interval=interval)
-        
-        if data.empty: return None
-
-        version = '2.9.4' # default
-
-        # ----------------------------
-        # 1. 折線圖 (Line Chart) v2
-        # ----------------------------
-        if chart_type == 'line':
-            dates = []
-            prices = []
-            
-            # Intraday (1d/5d) logic
-            for index, row in data.iterrows():
-                if period == '1d' or interval in ['1m','2m','5m','15m','30m']:
-                    dt_str = index.strftime('%H:%M')
-                else:
-                    dt_str = index.strftime('%m/%d')
-                    
-                dates.append(dt_str)
-                prices.append(row['Close'])
-
-            # Sampling
-            if len(dates) > 60:
-                step = len(dates) // 60 + 1
-                dates = dates[::step]
-                prices = prices[::step]
-
-            color = "#eb4e3d" if prices[-1] >= prices[0] else "#27ba46"
-            
-            chart_config = {
-                "type": "line",
-                "data": {
-                    "labels": dates,
-                    "datasets": [{
-                        "label": f"{symbol}",
-                        "data": prices,
-                        "borderColor": color,
-                        "backgroundColor": f"{color}1A",
-                        "fill": True,
-                        "pointRadius": 0,
-                        "borderWidth": 2,
-                        "lineTension": 0.1
-                    }]
-                },
-                "options": {
-                    "title": {"display": True, "text": f"{display_name} 走勢"},
-                    "legend": {"display": False},
-                    "scales": {
-                        "yAxes": [{"ticks": {"beginAtZero": False}}],
-                        "xAxes": [{"ticks": {"autoSkip": True, "maxTicksLimit": 6}}] 
-                    }
-                }
-            }
-
-        # ----------------------------
-        # 2. K線圖 (Candlestick) v3
-        # ----------------------------
-        elif chart_type == 'candlestick':
-            # Use Chart.js v3 for Candlestick (Better support in QuickChart)
-            version = '3'
-            
-            # Limit data points for clean rendering
-            if len(data) > 60:
-                data = data.tail(60)
-
-            labels = []
-            ohlc_data = []
-            
-            for index, row in data.iterrows():
-                date_str = index.strftime('%Y-%m-%d')
-                labels.append(date_str)
-                ohlc_data.append({
-                    "x": date_str,
-                    "o": float(row['Open']),
-                    "h": float(row['High']),
-                    "l": float(row['Low']),
-                    "c": float(row['Close'])
-                })
-            
-            chart_config = {
-                "type": "candlestick",
-                "data": {
-                    "labels": labels,
-                    "datasets": [{
-                        "label": f"{symbol}", 
-                        "data": ohlc_data,
-                        # Chart.js v3 financial colors
-                        "color": {
-                            "up": "#eb4e3d",
-                            "down": "#27ba46",
-                            "unchanged": "#999"
-                        },
-                         "borderColor": {
-                            "up": "#eb4e3d",
-                            "down": "#27ba46",
-                            "unchanged": "#999"
-                        }
-                    }]
-                },
-                "options": {
-                    "plugins": {
-                        "title": { "display": True, "text": f"{display_name} K線圖 ({'日K' if 'd' in interval else '週K' if 'wk' in interval else '月K'})" },
-                        "legend": { "display": False }
-                    },
-                    "scales": {
-                        "x": {
-                            "type": "category", # important for v3 candlestick with string labels
-                            "offset": True,
-                            "ticks": { "maxTicksLimit": 6 }
-                        },
-                        "y": {
-                            "ticks": { "beginAtZero": False }
-                        }
-                    }
-                }
-            }
-
-        # ----------------------------
-        # 3. 交易量圖 (Volume Bar Chart) v2 or v3
-        # ----------------------------
-        elif chart_type == 'bar':
-             # Let's keep v2 for bar chart as it works reliably
-             version = '2.9.4'
-             
-             if len(data) > 60:
-                 step = len(data) // 60 + 1
-                 data = data.iloc[::step]
-            
-             dates = []
-             volumes = []
-             colors = []
-             
-             for index, row in data.iterrows():
-                 dt_str = index.strftime('%m/%d')
-                 dates.append(dt_str)
-                 volumes.append(int(row['Volume']))
-                 
-                 # color based on price change if possible, or just blue
-                 if row['Close'] >= row['Open']:
-                     colors.append('#eb4e3d')
-                 else:
-                     colors.append('#27ba46')
-
-             chart_config = {
-                "type": "bar",
-                "data": {
-                    "labels": dates,
-                    "datasets": [{
-                        "label": "Volume",
-                        "data": volumes,
-                        "backgroundColor": colors
-                    }]
-                },
-                "options": {
-                    "title": {"display": True, "text": f"{display_name} 交易量 ({period})"},
-                    "legend": {"display": False},
-                    "scales": {
-                        "yAxes": [{"ticks": {"beginAtZero": True}}],
-                        "xAxes": [{"ticks": {"autoSkip": True, "maxTicksLimit": 6}}]
-                    }
-                }
-             }
-
-        # 發送 Request
-        url = "https://quickchart.io/chart/create"
-        payload = {
-            "chart": chart_config,
-            "width": 800,
-            "height": 600,
-            "backgroundColor": "white",
-            "version": version
-        }
-        
-        response = requests.post(url, json=payload, headers={'Content-Type': 'application/json'})
-        if response.status_code == 200:
-            return response.json().get('url')
-        else:
-            print(f"QuickChart Error: {response.text}")
-            return None
-            
-    except Exception as e:
-        print(f"Stock Chart Error: {e}")
-        return None
-
-# --- 7. 主要路由 ---
 @app.route("/", methods=['GET'])
 def home(): return "Alive", 200
 
@@ -1263,15 +100,22 @@ def push_vix():
         print(f"Error pushing VIX report: {e}")
         return str(e), 500
 
-# 保留舊的 /push_report 以便向後相容（同時推送兩者）
+# 保留舊的 /push_report 以便向後相容
 @app.route("/push_report", methods=['GET'])
 def push_report():
     """定時推送韓幣匯率與 VIX 恐慌指數報告（向後相容）"""
     if not TARGET_ID: return "No Target ID", 500
     try:
         krw_report = get_taiwan_bank_rates('KRW')
+        # Here krw_report is list, need to convert to str for simple push
+        krw_str = ""
+        if isinstance(krw_report, list):
+             for item in krw_report[:5]:
+                 krw_str += f"{item['bank']}: {item['cash_selling']}\n"
+        else: krw_str = str(krw_report)
+
         vix_report = generate_vix_report()
-        full_report = f"{get_greeting()}！\n\n📊 韓幣匯率\n{krw_report}\n\n{vix_report}"
+        full_report = f"{get_greeting()}！\n\n📊 韓幣匯率\n{krw_str}\n\n{vix_report}"
         
         line_bot_api.push_message(TARGET_ID, TextSendMessage(text=full_report))
         return "Report Sent (KRW + VIX)", 200
@@ -1291,9 +135,8 @@ def handle_message(event):
     # 判斷是否「真正」標記到了機器人
     is_mentioned_bot = False
     
-    # 方法 A: 檢查 event 中的 mention 物件 (最準確)
+    # 方法 A: 檢查 event 中的 mention 物件
     if hasattr(event.message, 'mention') and event.message.mention:
-        # 嘗試取得機器人自身的 User ID (快取)
         global BOT_USER_ID
         if 'BOT_USER_ID' not in globals() or not BOT_USER_ID:
             try:
@@ -1302,50 +145,30 @@ def handle_message(event):
             except:
                 BOT_USER_ID = None
         
-        # 比對 mention 列表
         if BOT_USER_ID:
             for mentionee in event.message.mention.mentionees:
                 if mentionee.user_id == BOT_USER_ID:
                     is_mentioned_bot = True
                     break
     
-    # 方法 B: 備用方案 (如果 API 無法取得 ID) -> 檢查是否包含 "🤖" 或特定 Bot 關鍵字
-    # 但為了避免亂回，這裡設嚴格一點: 必須有 mention 物件且對應到 Bot ID 最好
-    # 或者是使用者在一對一聊天室 (source.type == user)，那每一句都可以當作對 bot 說
-    
     is_private_chat = (event.source.type == 'user')
-    
     has_greeting_word = any(g in msg_upper for g in greetings)
-    
-    # 判定邏輯:
-    # 1. 有標記機器人 (無論有無問候語) -> 回覆問候
-    # 2. 一對一聊天 且 有問候語 -> 回覆問候
-    # 3. 群組內 未標記但有問候語 -> **不回覆** (避免打擾)
     
     if is_mentioned_bot:
         is_greeting = True
     elif is_private_chat and has_greeting_word:
         is_greeting = True
     
-    # (Optional) 強制檢查 Tag 關鍵字 ("@BOT", "@FinancialBot") 作為最後防線
-    # 如果 mention object 沒抓到 (e.g. 電腦版 copy paste?), 但文字有 @Bot
-    # User 說 "標記機器人這個帳號才會有問候語"，所以我們主要依賴 is_mentioned_bot
     if not is_greeting and ("@" in msg and "BOT" in msg_upper): 
-         # 稍微放寬一點點，以防 API 抓不到 Bot ID
          is_greeting = True
          print(f"Fallback mention detected via text: {msg}")
 
     print(f"[Debug] Msg: {msg}, IsBotMention: {is_mentioned_bot}, IsPrivate: {is_private_chat}, HasGreeting: {has_greeting_word} -> IsGreeting: {is_greeting}")
     
-    # 避免自己回自己: 檢查是否包含 "🤖" (我們自己的 emoji) -> 但 user 說沒回，也許不是這個問題
-    # 我們改為不檢查 emoji，畢竟 user 也可以打 emoji
-    
     if is_greeting:
-        # 取得使用者名稱以加上稱號
         user_id = event.source.user_id
         user_name = "朋友"
         try:
-             # 判斷來源類型以使用正確的 API
              if event.source.type == 'group':
                  profile = line_bot_api.get_group_member_profile(event.source.group_id, user_id)
              elif event.source.type == 'room':
@@ -1355,20 +178,8 @@ def handle_message(event):
              user_name = profile.display_name
         except: pass
 
-        # 這裡根據需求：回應時間回傳 早安/午安/晚安 大帥哥
-        # 取得目前的問候語 (get_greeting 回傳的是 "早安 🌞" 等，我們只取前半段文字，或根據 get_greeting 邏輯重組)
-        # 為了更精準控制 "大帥哥" 的位置，我們直接調用 get_greeting() 並稍作修飾
-        
-        
-        # 0. 取得問候語
         greeting_msg = get_greeting()
-
-        # 1. 取得市場 dashboard 數據
         market_data = get_market_dashboard_data()
-        
-        # 2. 如果抓不到數據 (全部失敗)，fallback 回純文字，或顯示空數據的卡片
-        
-        # 3. 產生 Flex Message. NOTE: Pass FULL greeting message (with emoji)
         reply_flex = generate_dashboard_flex_message(greeting_msg, user_name, market_data)
         
         line_bot_api.reply_message(event.reply_token, reply_flex)
@@ -1396,7 +207,6 @@ def handle_message(event):
             flex_msg = generate_currency_flex_message(forex_data, bank_report)
             line_bot_api.reply_message(event.reply_token, flex_msg)
         else:
-             # 如果沒有 forex data，但有 bank report (list or str)
              if isinstance(bank_report, list):
                   text_report = f"🏆 {msg} 匯率 (無即時盤)\n----------------\n"
                   for item in bank_report[:10]:
@@ -1411,7 +221,6 @@ def handle_message(event):
     if len(parts) == 2 and parts[1] == '列表' and parts[0] in VALID_CURRENCIES:
         report = get_taiwan_bank_rates(parts[0])
         if len(report) > 0 and isinstance(report, list):
-             # 將 list 轉為純文字報告
              text_report = f"🏆 {parts[0]} 匯率總覽\n(銀行 | 現鈔賣出 | 即期賣出)\n----------------\n"
              for item in report:
                  text_report += f"{item['bank']}: {item['cash_selling']} | {item['spot_selling']}\n"
@@ -1438,15 +247,11 @@ def handle_message(event):
 
 
     # 4. 台股複雜指令 (走勢圖/交易量)
-    # 指令格式: "{股票代號} {指令}"
     if len(parts) == 2 and parts[0].isdigit():
         symbol = parts[0]
         cmd = parts[1]
         
         chart_url = None
-        # 對應 Flex Message 按鈕的文案
-
-        # 先取得股票名稱
         stock_name = get_stock_name(symbol)
         
         if cmd in ['即時', '即時走勢', '即時走勢圖']:
@@ -1458,18 +263,16 @@ def handle_message(event):
         elif cmd in ['月K', '月線']:
             chart_url = generate_stock_chart_url_yf(symbol, '5y', '1mo', chart_type='candlestick', stock_name=stock_name)
         elif cmd in ['交易量', '近3日交易量']:
-             # 交易量: 使用 Bar Chart, 週期1個月 (看近期量能變化)
              chart_url = generate_stock_chart_url_yf(symbol, '1mo', '1d', chart_type='bar', stock_name=stock_name)
 
         if chart_url:
             line_bot_api.reply_message(event.reply_token, ImageSendMessage(original_content_url=chart_url, preview_image_url=chart_url))
         else:
-            # error handling
             if cmd in ['即時', '日K', '週K', '月K', '交易量']:
                 line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"❌ 產生圖表失敗 ({cmd})"))
         return
     
-    # 4. 美股查詢（優先於台股，避免 AAPL 等被誤判為台股）
+    # 5. 美股查詢（優先於台股，避免 AAPL 等被誤判為台股）
     # 偵測邏輯：純英文字母，1-5 個字元；或是以 ^ 開頭的指數 (e.g. ^VIX)
     is_us_stock = (msg.isalpha() and 1 <= len(msg) <= 5)
     is_index = (msg.startswith('^') and msg[1:].isalpha() and 2 <= len(msg) <= 6)
@@ -1483,10 +286,8 @@ def handle_message(event):
         else:
             print(f"[US Stock Query] No data found for: {msg}")
     
-    # 5. 台股查詢（數字代號或混合代號，如 00981A）
-    # 偵測邏輯：包含數字的英數字，4-6 字元
+    # 6. 台股查詢（數字代號或混合代號，如 00981A）
     if msg.isascii() and msg.isalnum() and 4 <= len(msg) <= 6:
-        # 確保至少包含一個數字（避免純英文被當作台股）
         if any(c.isdigit() for c in msg):
             print(f"[Taiwan Stock Query] Attempting to fetch: {msg}")
             stock = get_stock_info(msg)
@@ -1495,9 +296,6 @@ def handle_message(event):
                 return
             else:
                 print(f"[Taiwan Stock Query] No data found for: {msg}")
-
-
-
 
 if __name__ == "__main__":
     app.run()
