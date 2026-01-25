@@ -7,7 +7,7 @@ numpy<2.0.0
 lxml
 html5lib
 pytz
-yfinance
+yfinance>=0.2.40
 cachetools
 pandas_ta
 google-generativeai
