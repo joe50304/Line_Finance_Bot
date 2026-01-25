@@ -272,10 +272,12 @@ def handle_message(event):
 
         if chart_url:
             line_bot_api.reply_message(event.reply_token, ImageSendMessage(original_content_url=chart_url, preview_image_url=chart_url))
+            return
         else:
             if cmd in ['即時', '日K', '週K', '月K', '交易量']:
                 line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"❌ 產生圖表失敗 ({cmd})"))
-        return
+                return
+        # If not handled above (e.g. '策略'), fall through to next logic
     
     # 5. 美股查詢（優先於台股，避免 AAPL 等被誤判為台股）
     # 偵測邏輯：純英文字母，1-5 個字元；或是以 ^ 開頭的指數 (e.g. ^VIX)
