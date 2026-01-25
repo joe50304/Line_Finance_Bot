@@ -304,8 +304,10 @@ def handle_message(event):
 
     # 7. AI 智能分析 (股票代號 + 分析/策略)
     # e.g. "2330 分析", "AAPL 策略", "TSLA 分析"
+    print(f"[Debug] Check AI Command: Parts={parts}, Len={len(parts)}")
     if len(parts) == 2 and parts[1] in ['分析', '策略', '建議']:
         symbol = parts[0]
+        print(f"[Debug] AI Command Triggered: Symbol={symbol}")
         line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"🤖 正在分析 {symbol} 的數據並諮詢 AI 顧問，請稍候... (約 3-5 秒)"))
         
         # 1. 取得歷史數據
@@ -319,20 +321,26 @@ def handle_message(event):
                 full_symbol = symbol # Assume US stock or valid ticker
             
             stock_name = get_stock_name(symbol)
+            print(f"[Debug] Fetching history for {full_symbol}...")
             
             # 下載數據 (至少 60 天以計算 MA60)
             df = yf.download(full_symbol, period="3mo", interval="1d", progress=False)
             
             if df.empty:
+                print(f"[Debug] History empty for {full_symbol}")
                 line_bot_api.push_message(event.source.user_id, TextSendMessage(text=f"❌ 找不到 {symbol} 的歷史數據，無法分析。"))
                 return
+
+            print(f"[Debug] History fetched. Rows={len(df)}")
 
             # 2. 計算技術指標
             indicators = get_latest_indicators(df)
             
             # 3. 呼叫 AI
             if indicators:
+                print(f"[Debug] Indicators calculated. Calling AI...")
                 ai_result = get_ai_stock_analysis(symbol, stock_name, indicators)
+                print(f"[Debug] AI Result: {str(ai_result)[:50]}...")
                 
                 # Check format
                 if isinstance(ai_result, dict):
@@ -346,19 +354,23 @@ def handle_message(event):
                     annotations = None
                 
                 # 4. 同時產生一張 K 線圖作為輔助 (帶有分析線圖)
+                print(f"[Debug] Generating Chart...")
                 chart_url = generate_stock_chart_url_yf(
                     symbol, '6mo', '1d', 
                     chart_type='candlestick', 
                     stock_name=stock_name,
                     annotations=annotations
                 )
+                print(f"[Debug] Chart URL: {chart_url}")
                 
                 msgs = [TextSendMessage(text=f"🧠 AI 智能分析報告：\n\n{analysis_text}")]
                 if chart_url:
                     msgs.insert(0, ImageSendMessage(original_content_url=chart_url, preview_image_url=chart_url))
                 
                 line_bot_api.push_message(event.source.user_id, msgs)
+                print(f"[Debug] AI Report Sent.")
             else:
+                print(f"[Debug] Indicator calculation failed.")
                 line_bot_api.push_message(event.source.user_id, TextSendMessage(text="❌ 技術指標計算失敗 (數據不足)。"))
                 
         except Exception as e:
