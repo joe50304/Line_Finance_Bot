@@ -8,7 +8,7 @@
 
 ## ✨ 主要功能
 
-### 1. � 即時匯率查詢
+### 1. 🌏 即時匯率查詢
 *   輸入幣別代碼（如 `USD`, `JPY`）即可獲得最新匯率與台灣銀行現鈔/即期報價。
 *   輸入 `USD 1D` 或 `JPY 3M` 可查看匯率走勢圖。
 *   支援查看幣別排行榜（`USD 列表`）。
@@ -27,7 +27,7 @@
         2.  **Gemini AI 解讀**：由 AI 擔任分析師，判斷多空趨勢。
         3.  **策略視覺化**：自動在 K 線圖上標註 **🟢支撐線** 與 **🔴壓力線**。
 
-### 4. � 市場儀表板
+### 4. 📊 市場儀表板
 *   輸入 `Hi`、`早安` 或 `盤前`，喚醒個人化儀表板。
 *   一次瀏覽大盤指數 (TWII)、重要權值股與 VIX 恐慌指數。
 
@@ -48,17 +48,11 @@ LINE_CHANNEL_ACCESS_TOKEN=你的LineToken
 LINE_CHANNEL_SECRET=你的LineSecret
 GEMINI_API_KEY=你的GoogleGeminiKey  <-- 新增此項以啟用 AI 功能
 ```
+> 💡 **關於費用**：Gemini API 提供免費層級 (Free Tier)，個人開發測試通常無需付費。
 
 ### 3. 本地執行
 ```bash
 python app.py
-```
-
-### 4. 歷史回測 (進階)
-驗證 AI 策略準確度，可執行內建回測腳本：
-```bash
-# 需先設定 GEMINI_API_KEY 環境變數
-python backtest_strategy.py
 ```
 
 ## 📂 專案結構
@@ -72,7 +66,6 @@ python backtest_strategy.py
 │   ├── forex_service.py      # 匯率爬蟲
 │   ├── indicator_service.py  # 技術指標計算 (Pandas TA)
 │   └── stock_service.py      # 股價資訊抓取
-└── backtest_strategy.py    # 策略回測腳本
 ```
 
 ## 🚀 部署平台

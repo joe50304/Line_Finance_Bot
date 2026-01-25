@@ -27,3 +27,6 @@ security_audit.md
 # OS
 .DS_Store
 Thumbs.db
+
+# Dev Tools (Local Only)
+backtest_strategy.py
