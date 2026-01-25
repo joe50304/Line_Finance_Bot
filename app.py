@@ -88,7 +88,7 @@ def push_forex(currency):
         line_bot_api.push_message(TARGET_ID, TextSendMessage(text=message))
         return f"Forex Report Sent ({currency})", 200
     except Exception as e:
-        print(f"Error pushing forex report: {e}")
+        print(f"[Debug] Error pushing forex report: {e}")
         return str(e), 500
 
 @app.route("/push_vix", methods=['GET'])
@@ -102,7 +102,7 @@ def push_vix():
         line_bot_api.push_message(TARGET_ID, TextSendMessage(text=message))
         return "VIX Report Sent", 200
     except Exception as e:
-        print(f"Error pushing VIX report: {e}")
+        print(f"[Debug] Error pushing VIX report: {e}")
         return str(e), 500
 
 # 保留舊的 /push_report 以便向後相容
@@ -125,7 +125,7 @@ def push_report():
         line_bot_api.push_message(TARGET_ID, TextSendMessage(text=full_report))
         return "Report Sent (KRW + VIX)", 200
     except Exception as e:
-        print(f"Error pushing report: {e}")
+        print(f"[Debug] Error pushing report: {e}")
         return str(e), 500
 
 @handler.add(MessageEvent, message=TextMessage)
@@ -390,7 +390,7 @@ def handle_message(event):
                 line_bot_api.push_message(event.source.user_id, TextSendMessage(text="❌ 技術指標計算失敗 (數據不足)。"))
                 
         except Exception as e:
-            print(f"AI Analysis Error: {e}")
+            print(f"[Debug] AI Analysis Error: {e}")
             line_bot_api.push_message(event.source.user_id, TextSendMessage(text=f"❌ 分析過程中發生錯誤: {str(e)}"))
         return
 
