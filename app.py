@@ -321,7 +321,12 @@ def handle_message(event):
             if s_obj:
                 full_symbol = symbol + suffix
             else:
-                full_symbol = symbol # Assume US stock or valid ticker
+                # Fallback: 如果是純數字且驗證失敗 (可能網路問題)，強路假定為台股 .TW
+                if symbol.isdigit() and len(symbol) >= 4:
+                     print(f"[Debug] Validation failed but looks like TW stock. Force appending .TW")
+                     full_symbol = symbol + ".TW"
+                else:
+                     full_symbol = symbol # Assume US stock or valid ticker
             
             stock_name = get_stock_name(symbol)
             print(f"[Debug] Fetching history for {full_symbol}...")
@@ -333,19 +338,19 @@ def handle_message(event):
             if isinstance(df.columns, pd.MultiIndex):
                 try:
                     # 如果只有一層 ticker，直接移除第二層 (Ticker層)
-                    if len(df.columns.levels) > 1:
-                         # 嘗試只取該 Ticker 的數據 (如果有指定 Ticker)
-                         # 但通常下載單一股票時，直接 droplevel 即可
-                         df.columns = df.columns.droplevel(1) 
-                    else:
-                         df.columns = df.columns.droplevel(1)
+                     df.columns = df.columns.droplevel(1)
                 except Exception as e:
                     print(f"[Debug] Flatten columns failed: {e}")
                     pass
             
             if df.empty:
                 print(f"[Debug] History empty for {full_symbol}")
-                line_bot_api.push_message(event.source.user_id, TextSendMessage(text=f"❌ 找不到 {symbol} 的歷史數據，無法分析。"))
+                # Determine correct target ID for error message
+                if event.source.type == 'group': target_id = event.source.group_id
+                elif event.source.type == 'room': target_id = event.source.room_id
+                else: target_id = event.source.user_id
+                
+                line_bot_api.push_message(target_id, TextSendMessage(text=f"❌ 找不到 {symbol} 的歷史數據，無法分析。"))
                 return
 
             print(f"[Debug] History fetched. Rows={len(df)}")
@@ -384,15 +389,27 @@ def handle_message(event):
                 if chart_url:
                     msgs.insert(0, ImageSendMessage(original_content_url=chart_url, preview_image_url=chart_url))
                 
-                line_bot_api.push_message(event.source.user_id, msgs)
+                # Determine correct target ID (Group priority)
+                if event.source.type == 'group': target_id = event.source.group_id
+                elif event.source.type == 'room': target_id = event.source.room_id
+                else: target_id = event.source.user_id
+                
+                print(f"[Debug] Pushing report to {event.source.type} ID: {target_id}")
+                line_bot_api.push_message(target_id, msgs)
                 print(f"[Debug] AI Report Sent.")
             else:
                 print(f"[Debug] Indicator calculation failed.")
-                line_bot_api.push_message(event.source.user_id, TextSendMessage(text="❌ 技術指標計算失敗 (數據不足)。"))
+                if event.source.type == 'group': target_id = event.source.group_id
+                elif event.source.type == 'room': target_id = event.source.room_id
+                else: target_id = event.source.user_id
+                line_bot_api.push_message(target_id, TextSendMessage(text="❌ 技術指標計算失敗 (數據不足)。"))
                 
         except Exception as e:
             print(f"[Debug] AI Analysis Error: {e}")
-            line_bot_api.push_message(event.source.user_id, TextSendMessage(text=f"❌ 分析過程中發生錯誤: {str(e)}"))
+            if event.source.type == 'group': target_id = event.source.group_id
+            elif event.source.type == 'room': target_id = event.source.room_id
+            else: target_id = event.source.user_id
+            line_bot_api.push_message(target_id, TextSendMessage(text=f"❌ 分析過程中發生錯誤: {str(e)}"))
         return
 
 if __name__ == "__main__":
