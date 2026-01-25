@@ -73,7 +73,7 @@ def get_ai_stock_analysis(symbol, stock_name, indicators):
         try:
             return json.loads(text)
         except json.JSONDecodeError:
-            print(f"JSON Parse Error: {text}")
+            print(f"[Debug] JSON Parse Error: {text}")
             # Fallback to simple dict
             return {
                 "sentiment": "未知",
@@ -84,5 +84,5 @@ def get_ai_stock_analysis(symbol, stock_name, indicators):
 
 
     except Exception as e:
-        print(f"Gemini API Error: {e}")
+        print(f"[Debug] Gemini API Error: {e}")
         return "⚠️ AI 分析暫時無法使用，請稍後再試。"

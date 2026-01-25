@@ -54,7 +54,7 @@ def get_stock_name(symbol):
                     if item.get('c') == symbol and item.get('n'):
                         return item.get('n')
     except Exception as e:
-        print(f"Error getting stock name for {symbol}: {e}")
+        print(f"[Debug] Error getting stock name for {symbol}: {e}")
     
     return symbol
 
@@ -97,7 +97,7 @@ def get_stock_info(symbol):
             "PB": extra_stats.get("PB", "-")
         }
     except Exception as e:
-        print(f"Error getting stock info: {e}")
+        print(f"[Debug] Error getting stock info: {e}")
         return None
 
 def get_us_stock_info(symbol):
@@ -128,7 +128,7 @@ def get_us_stock_info(symbol):
             "week_52_low": info.get('fiftyTwoWeekLow', '-')
         }
     except Exception as e:
-        print(f"Error getting US stock info for {symbol}: {e}")
+        print(f"[Debug] Error getting US stock info for {symbol}: {e}")
         return None
 
 def get_vix_data(days=5):
@@ -142,7 +142,7 @@ def get_vix_data(days=5):
             vix_data.append({ "date": index.strftime('%Y-%m-%d'), "value": row['Close'] })
         return vix_data
     except Exception as e:
-        print(f"Error getting VIX data: {e}")
+        print(f"[Debug] Error getting VIX data: {e}")
         return None
 
 def generate_vix_report():
@@ -195,10 +195,10 @@ def get_market_dashboard_data():
                         "change_percent": f"{sign}{change_percent:.2f}%",
                         "color": color
                     })
-            except Exception as e: print(f"Error processing {symbol}: {e}")
+            except Exception as e: print(f"[Debug] Error processing {symbol}: {e}")
             results.append(item_data)
         return results
     except Exception as e:
-        print(f"Error getting market dashboard data: {e}")
+        print(f"[Debug] Error getting market dashboard data: {e}")
         return []
 

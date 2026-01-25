@@ -37,7 +37,7 @@ def calculate_technical_indicators(df):
 
         return df
     except Exception as e:
-        print(f"Error calculating indicators: {e}")
+        print(f"[Debug] Error calculating indicators: {e}")
         return df
 
 def get_latest_indicators(df):
@@ -74,5 +74,5 @@ def get_latest_indicators(df):
             "volume_delta": last['Volume'] - prev['Volume'] # 量縮或量增
         }
     except Exception as e:
-        print(f"Error getting latest indicators: {e}")
+        print(f"[Debug] Error getting latest indicators: {e}")
         return None
