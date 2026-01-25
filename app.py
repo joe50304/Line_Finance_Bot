@@ -36,8 +36,6 @@ from services.indicator_service import get_latest_indicators, calculate_technica
 from services.ai_advisor_service import get_ai_stock_analysis
 import yfinance as yf # Needed for fetching history for indicators
 import pandas as pd
-# Disable Numba JIT to save memory on Render (fixes SIGKILL/OOM)
-os.environ['NUMBA_DISABLE_JIT'] = '1'
 import yfinance as yf # Needed for fetching history for indicators
 
 

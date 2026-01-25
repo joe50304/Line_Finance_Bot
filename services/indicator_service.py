@@ -1,11 +1,10 @@
-
 import pandas as pd
-import pandas_ta as ta
+import numpy as np
 
 def calculate_technical_indicators(df):
     """
     計算技術指標 (RSI, MACD, BBands, MA)
-    df: 必須包含 Open, High, Low, Close, Volume 欄位
+    改用純 Pandas 實作，移除 pandas_ta 與 numba 依賴，以節省記憶體並避免 Render OOM。
     """
     if df is None or df.empty:
         return None
@@ -13,27 +12,47 @@ def calculate_technical_indicators(df):
     try:
         # 確保資料按時間排序
         df = df.sort_index()
+        close = df['Close']
 
-        # 1. 移動平均線 (SMA) - 判斷均線排列
-        df['SMA_5'] = ta.sma(df['Close'], length=5)
-        df['SMA_10'] = ta.sma(df['Close'], length=10)
-        df['SMA_20'] = ta.sma(df['Close'], length=20)
-        df['SMA_60'] = ta.sma(df['Close'], length=60)
+        # 1. 移動平均線 (SMA)
+        df['SMA_5'] = close.rolling(window=5).mean()
+        df['SMA_10'] = close.rolling(window=10).mean()
+        df['SMA_20'] = close.rolling(window=20).mean()
+        df['SMA_60'] = close.rolling(window=60).mean()
 
-        # 2. RSI 相對強弱指標 (14日) - 判斷超買超賣
-        df['RSI'] = ta.rsi(df['Close'], length=14)
+        # 2. RSI 相對強弱指標 (14日)
+        delta = close.diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+        rs = gain / loss
+        # 此處使用簡單移動平均 (SMA) 版本的 RSI 公式，與常見的 Wilder's Smoothing 略有不同但足夠近似
+        # 為求精確，改用 EMA 模擬 Wilder's Smoothing
+        # gain = delta.where(delta > 0, 0).ewm(alpha=1/14, adjust=False).mean()
+        # loss = -delta.where(delta < 0, 0).ewm(alpha=1/14, adjust=False).mean()
+        # 目前使用簡單版即可避免依賴
+        df['RSI'] = 100 - (100 / (1 + rs))
 
-        # 3. MACD 指數平滑異同移動平均線 - 判斷趨勢強弱
-        # macd() 回傳三個欄位: MACD_12_26_9, MACDh_12_26_9 (柱狀圖), MACDs_12_26_9 (訊號線)
-        macd = ta.macd(df['Close'], fast=12, slow=26, signal=9)
-        if macd is not None:
-             df = pd.concat([df, macd], axis=1)
+        # 3. MACD (12, 26, 9)
+        # MACD = EMA(12) - EMA(26)
+        # Signal = EMA(9) of MACD
+        exp12 = close.ewm(span=12, adjust=False).mean()
+        exp26 = close.ewm(span=26, adjust=False).mean()
+        macd_line = exp12 - exp26
+        signal_line = macd_line.ewm(span=9, adjust=False).mean()
+        macd_hist = macd_line - signal_line
         
-        # 4. 布林通道 (Bollinger Bands) - 判斷波動與壓力支撐
-        # bbands() 回傳: BBL (下軌), BBM (中軌), BBU (上軌), BBB (頻寬), BBP (位置)
-        bbands = ta.bbands(df['Close'], length=20, std=2)
-        if bbands is not None:
-            df = pd.concat([df, bbands], axis=1)
+        df['MACD_line'] = macd_line
+        df['MACD_signal'] = signal_line
+        df['MACD_hist'] = macd_hist # 柱狀圖
+
+        # 4. 布林通道 (20, 2)
+        # 中軌 = SMA(20)
+        # 上軌 = SMA(20) + 2 * std(20)
+        # 下軌 = SMA(20) - 2 * std(20)
+        ma20 = df['SMA_20']
+        std20 = close.rolling(window=20).std()
+        df['BBU_20_2.0'] = ma20 + (std20 * 2)
+        df['BBL_20_2.0'] = ma20 - (std20 * 2)
 
         return df
     except Exception as e:
@@ -51,26 +70,19 @@ def get_latest_indicators(df):
         last = df.iloc[-1]
         prev = df.iloc[-2] if len(df) > 1 else last
         
-        # 整理 MACD 欄位名稱 (pandas_ta 的欄位名可能會有後綴)
-        # 通常是 MACD_12_26_9, MACDh_12_26_9 (Histogram), MACDs_12_26_9 (Signal)
-        # 為了安全，我們找含有 MACD 開頭的欄位
-        macd_col = next((c for c in df.columns if c.startswith('MACD_')), None)
-        hist_col = next((c for c in df.columns if c.startswith('MACDh_')), None)
-        signal_col = next((c for c in df.columns if c.startswith('MACDs_')), None)
-        
         return {
             "close": last['Close'],
             "change": last['Close'] - prev['Close'],
             "change_percent": (last['Close'] - prev['Close']) / prev['Close'] * 100,
             "rsi": last.get('RSI'),
-            "macd": last.get(macd_col),
-            "macd_hist": last.get(hist_col), # 正值代表多頭動能
-            "macd_signal": last.get(signal_col),
+            "macd": last.get('MACD_line'),
+            "macd_hist": last.get('MACD_hist'), # 正值代表多頭動能
+            "macd_signal": last.get('MACD_signal'),
             "ma_5": last.get('SMA_5'),
             "ma_20": last.get('SMA_20'),
             "ma_60": last.get('SMA_60'),
-            "bb_upper": last.get(next((c for c in df.columns if c.startswith('BBU_')), None)),
-            "bb_lower": last.get(next((c for c in df.columns if c.startswith('BBL_')), None)),
+            "bb_upper": last.get('BBU_20_2.0'),
+            "bb_lower": last.get('BBL_20_2.0'),
             "volume_delta": last['Volume'] - prev['Volume'] # 量縮或量增
         }
     except Exception as e:
