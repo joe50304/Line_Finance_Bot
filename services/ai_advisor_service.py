@@ -1,5 +1,5 @@
-
 import google.generativeai as genai
+from google.api_core.exceptions import ResourceExhausted
 from config import GEMINI_API_KEY
 
 def get_ai_stock_analysis(symbol, stock_name, indicators):
@@ -97,6 +97,14 @@ def get_ai_stock_analysis(symbol, stock_name, indicators):
             }
 
 
+    except ResourceExhausted as e:
+        print(f"[Debug] Gemini Quota Exceeded: {e}")
+        return {
+            "formatted_text": "⚠️ Gemini AI 額度已達上限 (429 Too Many Requests)\n\nGoogle 免費版 API 有每分鐘請求限制 (RPM)。請稍候 60 秒後再試一次。\n\n如持續遇到此問題，建議稍晚再試。造成不便請見諒！🙇",
+            "sentiment": "N/A",
+            "support_price": None,
+            "resistance_price": None
+        }
     except Exception as e:
         print(f"[Debug] Gemini API Error: {e}")
-        return "⚠️ AI 分析暫時無法使用，請稍後再試。"
+        return "⚠️ AI 分析暫時無法使用 (API Error)，請稍後再試。"
