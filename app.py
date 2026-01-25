@@ -1217,16 +1217,34 @@ def callback():
     except InvalidSignatureError: abort(400)
     return 'OK'
 
-@app.route("/push_forex", methods=['GET'])
-def push_forex():
-    """定時推送韓幣匯率（早上 8:00，由外部 cron job 觸發）"""
+@app.route("/push_forex", defaults={'currency': 'KRW'}, methods=['GET'])
+@app.route("/push_forex/<currency>", methods=['GET'])
+def push_forex(currency):
+    """
+    定時推送匯率報告 (可指定幣別, 預設 KRW)
+    Usage: /push_forex (Default: KRW) or /push_forex/JPY
+    """
     if not TARGET_ID: return "No Target ID", 500
+    
+    currency = currency.upper()
+    if currency not in VALID_CURRENCIES:
+        return f"Invalid Currency: {currency}. Supported: {', '.join(VALID_CURRENCIES)}", 400
+
     try:
-        krw_report = get_taiwan_bank_rates('KRW')
-        message = f"{get_greeting()}！\n\n📊 韓幣匯率報告\n{krw_report}"
+        forex_report = get_taiwan_bank_rates(currency)
+        
+        # 處理報告回傳格式 (字串或列表)
+        if isinstance(forex_report, list) and forex_report:
+            report_str = f"📊 {currency} 匯率報告 (Top 10)\n{'-'*20}\n"
+            for item in forex_report:
+                report_str += f"{item['bank']}: {item['cash_selling']}\n"
+        else:
+            report_str = str(forex_report) if forex_report else "查無資料"
+
+        message = f"{get_greeting()}！\n\n{report_str}"
         
         line_bot_api.push_message(TARGET_ID, TextSendMessage(text=message))
-        return "Forex Report Sent (KRW)", 200
+        return f"Forex Report Sent ({currency})", 200
     except Exception as e:
         print(f"Error pushing forex report: {e}")
         return str(e), 500
