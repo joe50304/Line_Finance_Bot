@@ -9,3 +9,5 @@ html5lib
 pytz
 yfinance
 cachetools
+pandas_ta
+google-generativeai

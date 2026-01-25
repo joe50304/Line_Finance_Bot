@@ -27,11 +27,16 @@ from utils.flex_templates import (
 from services.forex_service import get_taiwan_bank_rates, get_forex_info
 from services.stock_service import (
     get_stock_info, get_us_stock_info, get_stock_name, 
-    generate_vix_report, get_market_dashboard_data
+    generate_vix_report, get_market_dashboard_data, get_valid_stock_obj
 )
 from services.chart_service import (
     generate_forex_chart_url_yf, generate_stock_chart_url_yf
 )
+from services.indicator_service import get_latest_indicators, calculate_technical_indicators
+from services.ai_advisor_service import get_ai_stock_analysis
+import yfinance as yf # Needed for fetching history for indicators
+import pandas as pd
+
 
 # 抑制 SSL 警告訊息
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -296,6 +301,54 @@ def handle_message(event):
                 return
             else:
                 print(f"[Taiwan Stock Query] No data found for: {msg}")
+
+    # 7. AI 智能分析 (股票代號 + 分析/策略)
+    # e.g. "2330 分析", "AAPL 策略", "TSLA 分析"
+    if len(parts) == 2 and parts[1] in ['分析', '策略', '建議']:
+        symbol = parts[0]
+        line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"🤖 正在分析 {symbol} 的數據並諮詢 AI 顧問，請稍候... (約 3-5 秒)"))
+        
+        # 1. 取得歷史數據
+        try:
+            # 判斷是台股還是美股/全代號
+            # 嘗試先用 helper 判斷
+            s_obj, info, suffix = get_valid_stock_obj(symbol)
+            if s_obj:
+                full_symbol = symbol + suffix
+            else:
+                full_symbol = symbol # Assume US stock or valid ticker
+            
+            stock_name = get_stock_name(symbol)
+            
+            # 下載數據 (至少 60 天以計算 MA60)
+            df = yf.download(full_symbol, period="3mo", interval="1d", progress=False)
+            
+            if df.empty:
+                line_bot_api.push_message(event.source.user_id, TextSendMessage(text=f"❌ 找不到 {symbol} 的歷史數據，無法分析。"))
+                return
+
+            # 2. 計算技術指標
+            indicators = get_latest_indicators(df)
+            
+            # 3. 呼叫 AI
+            if indicators:
+                analysis_text = get_ai_stock_analysis(symbol, stock_name, indicators)
+                
+                # 4. 同時產生一張 K 線圖作為輔助
+                chart_url = generate_stock_chart_url_yf(symbol, '6mo', '1d', chart_type='candlestick', stock_name=stock_name)
+                
+                msgs = [TextSendMessage(text=f"🧠 AI 智能分析報告：\n\n{analysis_text}")]
+                if chart_url:
+                    msgs.insert(0, ImageSendMessage(original_content_url=chart_url, preview_image_url=chart_url))
+                
+                line_bot_api.push_message(event.source.user_id, msgs)
+            else:
+                line_bot_api.push_message(event.source.user_id, TextSendMessage(text="❌ 技術指標計算失敗 (數據不足)。"))
+                
+        except Exception as e:
+            print(f"AI Analysis Error: {e}")
+            line_bot_api.push_message(event.source.user_id, TextSendMessage(text=f"❌ 分析過程中發生錯誤: {str(e)}"))
+        return
 
 if __name__ == "__main__":
     app.run()
