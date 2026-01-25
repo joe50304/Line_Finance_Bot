@@ -328,6 +328,20 @@ def handle_message(event):
             # 下載數據 (至少 60 天以計算 MA60, 3個月約60天太緊繃，改抓6個月)
             df = yf.download(full_symbol, period="6mo", interval="1d", progress=False)
             
+            # Handle MultiIndex columns (yfinance v0.2+ / v1.1.0)
+            if isinstance(df.columns, pd.MultiIndex):
+                try:
+                    # 如果只有一層 ticker，直接移除第二層 (Ticker層)
+                    if len(df.columns.levels) > 1:
+                         # 嘗試只取該 Ticker 的數據 (如果有指定 Ticker)
+                         # 但通常下載單一股票時，直接 droplevel 即可
+                         df.columns = df.columns.droplevel(1) 
+                    else:
+                         df.columns = df.columns.droplevel(1)
+                except Exception as e:
+                    print(f"[Debug] Flatten columns failed: {e}")
+                    pass
+            
             if df.empty:
                 print(f"[Debug] History empty for {full_symbol}")
                 line_bot_api.push_message(event.source.user_id, TextSendMessage(text=f"❌ 找不到 {symbol} 的歷史數據，無法分析。"))
