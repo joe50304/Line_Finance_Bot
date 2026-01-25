@@ -92,11 +92,11 @@ def generate_forex_chart_url_yf(currency_code, period="1d", interval="15m"):
         print(f"Chart Error: {e}")
         return None
 
-def generate_stock_chart_url_yf(symbol, period="1d", interval="15m", chart_type="line", stock_name=None):
+def generate_stock_chart_url_yf(symbol, period="1d", interval="15m", chart_type="line", stock_name=None, annotations=None):
     """
     產生台股走勢圖 (自動判斷上市/上櫃)
     chart_type: 'line' (折線圖), 'candlestick' (K線圖), 'bar' (交易量)
-    stock_name: 股票中文名稱 (optional)
+    annotations: dict, e.g. {'support': 1000, 'resistance': 1100}
     """
     # Import locally to avoid circular import if stock_service imports this
     # But here we need get_stock_name...
@@ -126,6 +126,49 @@ def generate_stock_chart_url_yf(symbol, period="1d", interval="15m", chart_type=
         if data.empty: return None
 
         version = '2.9.4' # default
+        
+        # Build Annotation Plugin Config
+        annotation_config = {}
+        if annotations:
+            annotations_list = []
+            if annotations.get('support'):
+                annotations_list.append({
+                    "type": "line",
+                    "mode": "horizontal",
+                    "scaleID": "y-axis-0",
+                    "value": annotations['support'],
+                    "borderColor": "green",
+                    "borderWidth": 2,
+                    "borderDash": [5, 5],
+                    "label": {
+                        "content": f"Support: {annotations['support']}",
+                        "enabled": True,
+                        "position": "left",
+                        "backgroundColor": "rgba(0,0,0,0.5)"
+                    }
+                })
+            if annotations.get('resistance'):
+                annotations_list.append({
+                    "type": "line",
+                    "mode": "horizontal",
+                    "scaleID": "y-axis-0",
+                    "value": annotations['resistance'],
+                    "borderColor": "red",
+                    "borderWidth": 2,
+                    "borderDash": [5, 5],
+                    "label": {
+                        "content": f"Resist: {annotations['resistance']}",
+                        "enabled": True,
+                        "position": "right",
+                        "backgroundColor": "rgba(0,0,0,0.5)"
+                    }
+                })
+            
+            if annotations_list:
+                annotation_config = {
+                    "annotations": annotations_list
+                }
+
 
         # ----------------------------
         # 1. 折線圖 (Line Chart) v2
@@ -170,8 +213,9 @@ def generate_stock_chart_url_yf(symbol, period="1d", interval="15m", chart_type=
                 "options": {
                     "title": {"display": True, "text": f"{display_name} 走勢"},
                     "legend": {"display": False},
+                    "annotation": annotation_config, # v2 annotation
                     "scales": {
-                        "yAxes": [{"ticks": {"beginAtZero": False}}],
+                        "yAxes": [{"id": "y-axis-0", "ticks": {"beginAtZero": False}}],
                         "xAxes": [{"ticks": {"autoSkip": True, "maxTicksLimit": 6}}] 
                     }
                 }
@@ -182,6 +226,7 @@ def generate_stock_chart_url_yf(symbol, period="1d", interval="15m", chart_type=
         # ----------------------------
         elif chart_type == 'candlestick':
             # Use Chart.js v3 for Candlestick (Better support in QuickChart)
+            # Annotation logic for v3 is slighty different structure, usually inside plugins
             version = '3'
             
             # Limit data points for clean rendering
@@ -201,6 +246,21 @@ def generate_stock_chart_url_yf(symbol, period="1d", interval="15m", chart_type=
                     "l": float(row['Low']),
                     "c": float(row['Close'])
                 })
+                
+            # Adjust annotation structure for v3
+            if annotations:
+                # v3 annotations are under plugins.annotation.annotations
+                # which can be an object or array. QuickChart supports array.
+                v3_annotations = {} 
+                # Re-map scaleID 'y-axis-0' to 'y' for v3
+                for i, ann in enumerate(annotation_config.get('annotations', [])):
+                     ann['scaleID'] = 'y'
+                     # v3 label config is different, simplistic approach for now
+                     # QuickChart often handles v2 compat, but explicit v3 is better
+                     v3_annotations[f"line{i}"] = ann
+
+                annotation_config = { "annotations": v3_annotations }
+
             
             chart_config = {
                 "type": "candlestick",
@@ -225,7 +285,8 @@ def generate_stock_chart_url_yf(symbol, period="1d", interval="15m", chart_type=
                 "options": {
                     "plugins": {
                         "title": { "display": True, "text": f"{display_name} K線圖 ({'日K' if 'd' in interval else '週K' if 'wk' in interval else '月K'})" },
-                        "legend": { "display": False }
+                        "legend": { "display": False },
+                        "annotation": annotation_config
                     },
                     "scales": {
                         "x": {
@@ -239,6 +300,7 @@ def generate_stock_chart_url_yf(symbol, period="1d", interval="15m", chart_type=
                     }
                 }
             }
+
 
         # ----------------------------
         # 3. 交易量圖 (Volume Bar Chart) v2 or v3

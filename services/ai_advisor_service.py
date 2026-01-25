@@ -19,7 +19,7 @@ def get_ai_stock_analysis(symbol, stock_name, indicators):
 
         # 構建 Prompt
         prompt = f"""
-        你是一位華爾街資深操盤手與技術分析專家。請根據以下數據分析 {stock_name} ({symbol}) 的走勢。
+        你是一位華爾街資深操盤手。請根據以下數據分析 {stock_name} ({symbol}) 的走勢。
         
         【市場數據】
         - 現價: {indicators['close']:.2f}
@@ -29,23 +29,44 @@ def get_ai_stock_analysis(symbol, stock_name, indicators):
         【技術指標】
         - RSI (14): {indicators['rsi']:.2f} (強弱指標，>70超買, <30超賣)
         - MACD 柱狀圖: {indicators['macd_hist']:.2f} ({'多頭增強' if indicators['macd_hist'] > 0 else '空頭增強'})
-        - 收盤 vs MA5: {'高於' if indicators['close'] > indicators['ma_5'] else '低於'} 短期均線
-        - 收盤 vs MA20: {'高於' if indicators['close'] > indicators['ma_20'] else '低於'} 月線 (生命線)
-        - 收盤 vs MA60: {'高於' if indicators['close'] > indicators['ma_60'] else '低於'} 季線
-        - 布林通道位置: 目前在 {indicators['close']:.2f}，(上軌 {indicators['bb_upper']:.2f}, 下軌 {indicators['bb_lower']:.2f})
+        - 收盤 vs MA20: {'高於' if indicators['close'] > indicators['ma_20'] else '低於'} 月線
+        - 布林通道: 上軌 {indicators['bb_upper']:.2f}, 下軌 {indicators['bb_lower']:.2f}
 
         【輸出要求】
-        請用繁體中文，以條列式回答，語氣專業但白話：
-        1. **市場情緒**: (看多/看空/盤整/中立)
-        2. **關鍵價位**: (分析支撐位與壓力位)
-        3. **趨勢分析**: (綜合均線、MACD 與 RSI 判斷目前趨勢)
-        4. **操作建議**: (具體建議：進場、止損、獲利了結或觀望，並說明理由)
-
-        請限制在 300 字以內，不要有過多的免責聲明，直接給出分析。
+        請直接回傳一個合法的 JSON 物件 (不要有 markdown code block ` ```json `)，格式如下：
+        {{
+            "sentiment": "看多/看空/盤整",
+            "support_price": <數值，分析出的下方支撐位，若無請填 null>,
+            "resistance_price": <數值，分析出的上方壓力位，若無請填 null>,
+            "action": "建議的操作 (如：拉回 1000 進場)",
+            "reason": "簡短分析理由 (100字內)",
+            "formatted_text": "完整分析報告 (條列式，包含市場情緒、關鍵價位、趨勢分析、操作建議，300字內)"
+        }}
         """
 
         response = model.generate_content(prompt)
-        return response.text.strip()
+        text = response.text.strip()
+        
+        # 清理可能存在的 Markdown 標記
+        if text.startswith("```json"):
+            text = text[7:]
+        if text.endswith("```"):
+            text = text[:-3]
+        text = text.strip()
+
+        import json
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            print(f"JSON Parse Error: {text}")
+            # Fallback to simple dict
+            return {
+                "sentiment": "未知",
+                "formatted_text": text, # 回傳原始文字
+                "support_price": None,
+                "resistance_price": None
+            }
+
 
     except Exception as e:
         print(f"Gemini API Error: {e}")

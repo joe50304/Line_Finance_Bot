@@ -332,10 +332,26 @@ def handle_message(event):
             
             # 3. 呼叫 AI
             if indicators:
-                analysis_text = get_ai_stock_analysis(symbol, stock_name, indicators)
+                ai_result = get_ai_stock_analysis(symbol, stock_name, indicators)
                 
-                # 4. 同時產生一張 K 線圖作為輔助
-                chart_url = generate_stock_chart_url_yf(symbol, '6mo', '1d', chart_type='candlestick', stock_name=stock_name)
+                # Check format
+                if isinstance(ai_result, dict):
+                    analysis_text = ai_result.get('formatted_text', str(ai_result))
+                    annotations = {
+                        'support': ai_result.get('support_price'),
+                        'resistance': ai_result.get('resistance_price')
+                    }
+                else:
+                    analysis_text = str(ai_result)
+                    annotations = None
+                
+                # 4. 同時產生一張 K 線圖作為輔助 (帶有分析線圖)
+                chart_url = generate_stock_chart_url_yf(
+                    symbol, '6mo', '1d', 
+                    chart_type='candlestick', 
+                    stock_name=stock_name,
+                    annotations=annotations
+                )
                 
                 msgs = [TextSendMessage(text=f"🧠 AI 智能分析報告：\n\n{analysis_text}")]
                 if chart_url:
