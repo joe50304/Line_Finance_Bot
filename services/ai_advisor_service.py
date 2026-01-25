@@ -15,7 +15,22 @@ def get_ai_stock_analysis(symbol, stock_name, indicators):
 
     try:
         genai.configure(api_key=GEMINI_API_KEY)
-        model = genai.GenerativeModel('gemini-1.5-flash') # 使用 Flash 模型速度快且免費額度高
+        
+        # 嘗試使用不同的模型名稱 (優先使用 2.5 系列)
+        model_names = ['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-1.5-flash', 'gemini-pro']
+        model = None
+        
+        for name in model_names:
+            try:
+                # 測試模型是否可用 (此處僅建立物件，真正錯誤要在 generate_content 時才會觸發 404?)
+                # 實際上 genai.GenerativeModel 不會立即檢查，所以我們直接用第一個，
+                # 但為了保險，可以在這裡做一個小的 fallback 機制，或是直接指定最可能的那個。
+                # 根據使用者回饋，直接鎖定 2.5 Pro 或 Flash。
+                model = genai.GenerativeModel(name)
+                break
+            except: continue
+            
+        if not model: model = genai.GenerativeModel('gemini-2.5-flash')
 
         # 構建 Prompt
         prompt = f"""
