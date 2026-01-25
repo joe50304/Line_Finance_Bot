@@ -310,6 +310,14 @@ def handle_message(event):
     print(f"[Debug] Check AI Command: Parts={parts}, Len={len(parts)}")
     if len(parts) == 2 and parts[1] in ['分析', '策略', '建議']:
         symbol = parts[0]
+        
+        # [Validation] 確保代號是否合法 (alphanumeric, ., ^)
+        # 防止類似 "隨便 策略" 這種聊天內容觸發分析
+        import re
+        if not re.match(r'^[A-Za-z0-9\.\^]+$', symbol):
+             print(f"[Debug] Invalid symbol format ignored: {symbol}")
+             return
+
         print(f"[Debug] AI Command Triggered: Symbol={symbol}")
         line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"🤖 正在分析 {symbol} 的數據並諮詢 AI 顧問，請稍候... (約 3-5 秒)"))
         
