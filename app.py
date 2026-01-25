@@ -325,8 +325,8 @@ def handle_message(event):
             stock_name = get_stock_name(symbol)
             print(f"[Debug] Fetching history for {full_symbol}...")
             
-            # 下載數據 (至少 60 天以計算 MA60)
-            df = yf.download(full_symbol, period="3mo", interval="1d", progress=False)
+            # 下載數據 (至少 60 天以計算 MA60, 3個月約60天太緊繃，改抓6個月)
+            df = yf.download(full_symbol, period="6mo", interval="1d", progress=False)
             
             if df.empty:
                 print(f"[Debug] History empty for {full_symbol}")
