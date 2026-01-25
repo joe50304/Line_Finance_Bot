@@ -32,20 +32,34 @@ def get_ai_stock_analysis(symbol, stock_name, indicators):
             
         if not model: model = genai.GenerativeModel('gemini-2.5-flash')
 
+        # 安全取得數值 (防止 None 導致 formatting error)
+        def safe_get(key, default=0.0):
+            val = indicators.get(key)
+            return val if val is not None else default
+
+        p_close = safe_get('close')
+        p_change = safe_get('change_percent')
+        p_vol_delta = indicators.get('volume_delta', 0)
+        p_rsi = safe_get('rsi')
+        p_macd_hist = safe_get('macd_hist')
+        p_ma20 = safe_get('ma_20')
+        p_bb_up = safe_get('bb_upper')
+        p_bb_low = safe_get('bb_lower')
+
         # 構建 Prompt
         prompt = f"""
         你是一位華爾街資深操盤手。請根據以下數據分析 {stock_name} ({symbol}) 的走勢。
         
         【市場數據】
-        - 現價: {indicators['close']:.2f}
-        - 漲跌幅: {indicators['change_percent']:.2f}%
-        - 成交量變化: {'量增' if indicators['volume_delta'] > 0 else '量縮'}
+        - 現價: {p_close:.2f}
+        - 漲跌幅: {p_change:.2f}%
+        - 成交量變化: {'量增' if p_vol_delta > 0 else '量縮'}
 
         【技術指標】
-        - RSI (14): {indicators['rsi']:.2f} (強弱指標，>70超買, <30超賣)
-        - MACD 柱狀圖: {indicators['macd_hist']:.2f} ({'多頭增強' if indicators['macd_hist'] > 0 else '空頭增強'})
-        - 收盤 vs MA20: {'高於' if indicators['close'] > indicators['ma_20'] else '低於'} 月線
-        - 布林通道: 上軌 {indicators['bb_upper']:.2f}, 下軌 {indicators['bb_lower']:.2f}
+        - RSI (14): {p_rsi:.2f} (強弱指標，>70超買, <30超賣)
+        - MACD 柱狀圖: {p_macd_hist:.2f} ({'多頭增強' if p_macd_hist > 0 else '空頭增強'})
+        - 收盤 vs MA20: {'高於' if p_close > p_ma20 else '低於'} 月線
+        - 布林通道: 上軌 {p_bb_up:.2f}, 下軌 {p_bb_low:.2f}
 
         【輸出要求】
         請直接回傳一個合法的 JSON 物件 (不要有 markdown code block ` ```json `)，格式如下：
