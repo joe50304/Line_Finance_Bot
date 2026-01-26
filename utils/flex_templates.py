@@ -359,7 +359,7 @@ def generate_stock_flex_message(data):
             body=BoxComponent(
                 layout='vertical',
                 contents=[
-                    TextComponent(text=f"{data['name']} ({data['symbol']})", weight='bold', size='xl'),
+                    TextComponent(text=f"{data['name']} ({data['symbol']}) {data['type']}", weight='bold', size='xl'),
                     BoxComponent(
                         layout='baseline', margin='md',
                         contents=[
@@ -392,10 +392,10 @@ def generate_stock_flex_message(data):
                             BoxComponent(
                                 layout='baseline',
                                 contents=[
-                                    TextComponent(text="總量", color='#aaaaaa', size='sm', flex=1),
-                                    TextComponent(text=f"{data['volume']:,.0f}", align='end', size='sm', flex=2),
-                                    TextComponent(text="類型", color='#aaaaaa', size='sm', flex=1),
-                                    TextComponent(text=f"{data['type']}", align='end', size='sm', flex=2)
+                                    TextComponent(text="成交(張)", color='#aaaaaa', size='sm', flex=1),
+                                    TextComponent(text=f"{data['volume']/1000:,.0f}", align='end', size='sm', flex=2),
+                                    TextComponent(text="總量(股)", color='#aaaaaa', size='sm', flex=1),
+                                    TextComponent(text=f"{data['volume']:,.0f}", align='end', size='sm', flex=2)
                                 ]
                             ),
                             BoxComponent(
