@@ -80,13 +80,23 @@ def get_stock_info(symbol):
         try: change_percent = (change / prev_close * 100) if prev_close else 0
         except: change_percent = 0
             
+
+        if suffix in ['.TW', '.TWO']:
+            from utils.common import calculate_twse_limit
+            limit_up = calculate_twse_limit(prev_close, is_up=True)
+            limit_down = calculate_twse_limit(prev_close, is_up=False)
+        else:
+            # 美股無漲跌幅限制 (或不同規則)，此處暫時保留原樣或設為 0
+            limit_up = 0
+            limit_down = 0
+
         return {
             "symbol": symbol, "name": stock_name,
             "price": price, 
             "change": change,
             "change_percent": change_percent,
-            "limit_up": prev_close * 1.1 if prev_close else 0, 
-            "limit_down": prev_close * 0.9 if prev_close else 0,
+            "limit_up": limit_up,
+            "limit_down": limit_down,
             "volume": info.last_volume, 
             "high": info.day_high, 
             "low": info.day_low,
