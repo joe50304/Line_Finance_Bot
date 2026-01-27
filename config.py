@@ -5,6 +5,7 @@ import os
 LINE_CHANNEL_ACCESS_TOKEN = os.environ.get('LINE_CHANNEL_ACCESS_TOKEN')
 LINE_CHANNEL_SECRET = os.environ.get('LINE_CHANNEL_SECRET')
 GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY')
+FUGLE_API_KEY = os.environ.get('FUGLE_API_KEY')
 TARGET_ID = os.environ.get('MY_USER_ID', '')
 BOT_USER_ID = None
 

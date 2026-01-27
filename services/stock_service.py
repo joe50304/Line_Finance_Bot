@@ -61,6 +61,53 @@ def get_stock_name(symbol):
 def get_stock_info(symbol):
     try:
         stock, info, suffix = get_valid_stock_obj(symbol)
+        
+        # 嘗試使用 Fugle API (僅針對台股)
+        if suffix in ['.TW', '.TWO']:
+            from config import FUGLE_API_KEY
+            if FUGLE_API_KEY:
+                from services.fugle_service import get_realtime_quote
+                print(f"[Debug] Attempting to fetch {symbol} from Fugle...")
+                fugle_data = get_realtime_quote(symbol) # Fugle usually takes clean symbol (e.g. 2330)
+                
+                if fugle_data:
+                    print(f"[Debug] Fugle Data: {str(fugle_data)[:100]}...")
+                    try:
+                        name = fugle_data.get('name', symbol)
+                        price = fugle_data['lastTrade']['price']
+                        prev_close = fugle_data.get('previousClose')
+                        
+                        change = price - prev_close if prev_close else 0
+                        change_percent = (change / prev_close) * 100 if prev_close else 0
+                        
+                        # Fugle Total Volume is in SHARES
+                        volume = fugle_data['total']['tradeVolume']
+
+                        from utils.common import calculate_twse_limit
+                        limit_up = calculate_twse_limit(prev_close, is_up=True)
+                        limit_down = calculate_twse_limit(prev_close, is_up=False)
+
+                        return {
+                            "symbol": fugle_data['symbol'],
+                            "name": name,
+                            "price": price,
+                            "change": change,
+                            "change_percent": change_percent,
+                            "limit_up": limit_up,
+                            "limit_down": limit_down,
+                            "volume": volume,
+                            "high": fugle_data.get('highPrice', price),
+                            "low": fugle_data.get('lowPrice', price),
+                            "avg_price": fugle_data.get('avgPrice', 0),
+                            "type": "上櫃" if suffix == ".TWO" else "上市", # Simple inference or check 'market' field
+                            "PE": "-", # Fugle Quote usually doesn't have PE/Yield, might need separate API or stick to TWSE
+                            "Yield": "-", 
+                            "PB": "-" 
+                        }
+                    except Exception as e:
+                        print(f"[Debug] Error parsing Fugle data: {e}. Fallback to YFinance.")
+        
+        # Fallback to YFinance
         if not stock: return None
         
         extra_stats = {}
