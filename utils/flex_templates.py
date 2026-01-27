@@ -398,7 +398,7 @@ def generate_stock_flex_message(data):
                                 ] + ([
                                     TextComponent(text="總量(股)", color='#aaaaaa', size='sm', flex=1),
                                     TextComponent(text=f"{data['volume']:,.0f}", align='end', size='sm', flex=2)
-                                ] if data.get('source') != 'fugle' else [BoxComponent(layout='baseline', flex=3, contents=[])])
+                                ] if data.get('source') != 'fugle' else [TextComponent(text=" ", flex=3)])
                             ),
                             BoxComponent(
                                 layout='baseline',
