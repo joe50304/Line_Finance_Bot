@@ -393,7 +393,10 @@ def generate_stock_flex_message(data):
                                 layout='baseline',
                                 contents=[
                                     TextComponent(text="成交(張)", color='#aaaaaa', size='sm', flex=1),
-                                    TextComponent(text=f"{data['volume']/1000:,.0f}", align='end', size='sm', flex=2),
+                                    TextComponent(
+                                        text=f"{data['volume']:,.0f}" if data.get('source') == 'fugle' else f"{data['volume']/1000:,.0f}", 
+                                        align='end', size='sm', flex=2
+                                    ),
                                     # Fugle 模式不顯示總量(股), 一般模式顯示
                                 ] + ([
                                     TextComponent(text="總量(股)", color='#aaaaaa', size='sm', flex=1),
