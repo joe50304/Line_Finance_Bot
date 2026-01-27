@@ -65,13 +65,14 @@ def get_stock_info(symbol):
         # 嘗試使用 Fugle API (僅針對台股)
         if suffix in ['.TW', '.TWO']:
             from config import FUGLE_API_KEY
+            print(f"[Debug] Fugle Key Present: {bool(FUGLE_API_KEY)}") # Check if key exists
             if FUGLE_API_KEY:
                 from services.fugle_service import get_realtime_quote
                 print(f"[Debug] Attempting to fetch {symbol} from Fugle...")
-                fugle_data = get_realtime_quote(symbol) # Fugle usually takes clean symbol (e.g. 2330)
+                fugle_data = get_realtime_quote(symbol) 
                 
                 if fugle_data:
-                    print(f"[Debug] Fugle Data: {str(fugle_data)[:100]}...")
+                    print(f"[Debug] Fugle Data Success. Price: {fugle_data.get('lastTrade', {}).get('price')}")
                     try:
                         name = fugle_data.get('name', symbol)
                         price = fugle_data['lastTrade']['price']
@@ -99,16 +100,21 @@ def get_stock_info(symbol):
                             "high": fugle_data.get('highPrice', price),
                             "low": fugle_data.get('lowPrice', price),
                             "avg_price": fugle_data.get('avgPrice', 0),
-                            "type": "上櫃" if suffix == ".TWO" else "上市", # Simple inference or check 'market' field
-                            "PE": "-", # Fugle Quote usually doesn't have PE/Yield, might need separate API or stick to TWSE
+                            "type": "上櫃" if suffix == ".TWO" else "上市",
+                            "PE": "-", 
                             "Yield": "-", 
                             "PB": "-" 
                         }
                     except Exception as e:
                         print(f"[Debug] Error parsing Fugle data: {e}. Fallback to YFinance.")
+                else:
+                    print(f"[Debug] Fugle returned None (Simulated Fallback).")
         
         # Fallback to YFinance
-        if not stock: return None
+        print(f"[Debug] Fallback to YFinance for {symbol}...")
+        if not stock: 
+            print(f"[Debug] YFinance Ticker object invalid.")
+            return None
         
         extra_stats = {}
         if suffix == ".TW":
