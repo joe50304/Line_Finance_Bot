@@ -330,6 +330,11 @@ def handle_message(event):
     # 7. AI 智能分析 (股票代號 + 分析/策略)
     # e.g. "2330 分析", "AAPL 策略", "TSLA 分析"
     print(f"[Debug] Check AI Command: Parts={parts}, Len={len(parts)}")
+    
+    # [Pre-validation] Ignore mentions or obviously non-stock inputs
+    if not parts or parts[0].startswith('@'):
+        return
+
     if len(parts) == 2 and parts[1] in ['分析', '策略', '建議']:
         symbol = parts[0]
         
