@@ -1,7 +1,7 @@
 
 from linebot.models import (
     FlexSendMessage, BubbleContainer, BoxComponent, TextComponent, ButtonComponent,
-    MessageAction, SeparatorComponent, ImageSendMessage, TextSendMessage
+    MessageAction, SeparatorComponent, ImageSendMessage, TextSendMessage, FillerComponent
 )
 
 def generate_currency_flex_message(forex_data, bank_report_text):
