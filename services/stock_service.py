@@ -84,9 +84,14 @@ def get_stock_info(symbol):
                         # Fugle Total Volume is in SHARES
                         volume = fugle_data['total']['tradeVolume']
 
-                        from utils.common import calculate_twse_limit
-                        limit_up = calculate_twse_limit(prev_close, is_up=True)
-                        limit_down = calculate_twse_limit(prev_close, is_up=False)
+                        limit_up = fugle_data.get('limitUpPrice')
+                        limit_down = fugle_data.get('limitDownPrice')
+                        
+                        # Fallback if Fugle doesn't provide limits (should usually provide them)
+                        if not limit_up or not limit_down:
+                            from utils.common import calculate_twse_limit
+                            if not limit_up: limit_up = calculate_twse_limit(prev_close, is_up=True)
+                            if not limit_down: limit_down = calculate_twse_limit(prev_close, is_up=False)
 
                         return {
                             "symbol": fugle_data['symbol'],
@@ -103,7 +108,8 @@ def get_stock_info(symbol):
                             "type": "上櫃" if suffix == ".TWO" else "上市",
                             "PE": "-", 
                             "Yield": "-", 
-                            "PB": "-" 
+                            "PB": "-",
+                            "source": "fugle" 
                         }
                     except Exception as e:
                         print(f"[Debug] Error parsing Fugle data: {e}. Fallback to YFinance.")

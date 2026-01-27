@@ -278,6 +278,28 @@ def handle_message(event):
             if cmd in ['即時', '日K', '週K', '月K', '交易量']:
                 line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"❌ 產生圖表失敗 ({cmd})"))
                 return
+            
+            elif cmd == '52週':
+                try:
+                    # 使用 yfinance 抓取 52 週數據
+                    t = yf.Ticker(symbol + ".TW") # 預設假設為台股
+                    info = t.info
+                    # 如果 .TW 沒資料，嘗試不加後綴 (防禦性)
+                    if not info or 'fiftyTwoWeekHigh' not in info:
+                         t = yf.Ticker(symbol)
+                         info = t.info
+                    
+                    h52 = info.get('fiftyTwoWeekHigh', 'N/A')
+                    l52 = info.get('fiftyTwoWeekLow', 'N/A')
+                    
+                    line_bot_api.reply_message(
+                        event.reply_token, 
+                        TextSendMessage(text=f"📊 {symbol} {stock_name}\n\n🔥 近 52 週最高: {h52}\n🧊 近 52 週最低: {l52}")
+                    )
+                except Exception as e:
+                    line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"❌ 無法取得 52 週數據: {e}"))
+                return
+
         # If not handled above (e.g. '策略'), fall through to next logic
     
     # 5. 美股查詢（優先於台股，避免 AAPL 等被誤判為台股）
