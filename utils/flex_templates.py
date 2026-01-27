@@ -427,6 +427,26 @@ def generate_stock_flex_message(data):
                                     ButtonComponent(style='secondary', height='sm', action=MessageAction(label='月 K', text=f"{data['symbol']} 月K"))
                                 ]
                             ),
+                            # Fugle 專屬功能: 52週股價
+                            *(
+                                [ButtonComponent(
+                                     style='secondary', height='sm', margin='sm',
+                                     action=MessageAction(label='近 52 週股價', text=f'{data["symbol"]} 52週')
+                                )] if data.get('source') == 'fugle' else []
+                            ),
+                            BoxComponent(
+                                 layout='horizontal', spacing='sm', margin='sm',
+                                 contents=[
+                                     ButtonComponent(
+                                         style='secondary', height='sm', flex=1,
+                                         action=MessageAction(label='AI 分析', text=f'{data["symbol"]} 分析')
+                                     ),
+                                     ButtonComponent(
+                                         style='secondary', height='sm', flex=1,
+                                         action=MessageAction(label='策略', text=f'{data["symbol"]} 策略')
+                                     )
+                                 ]
+                            ),
                             ButtonComponent(style='link', height='sm', action=MessageAction(label='近3日交易量', text=f"{data['symbol']} 交易量"))
                         ]
                     )
